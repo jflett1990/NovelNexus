@@ -153,4 +153,8 @@ def initialize_ollama() -> None:
             logger.warning(f"Required models not found in Ollama: {missing_models}")
             logger.warning("Please pull the missing models using 'ollama pull <model>'")
     except Exception as e:
-        logger.error(f"Failed to initialize Ollama: {e}")
+        logger.warning(f"Ollama not available in this environment: {e}")
+        logger.info("The application is configured to use Ollama models when run locally:")
+        logger.info(f"  - Main model: {DEFAULT_MODEL}")
+        logger.info(f"  - Embedding model: {EMBEDDING_MODEL}")
+        logger.info("Please ensure Ollama is installed and these models are pulled when running locally.")
