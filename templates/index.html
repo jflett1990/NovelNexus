@@ -1,0 +1,173 @@
+{% extends "layout.html" %}
+
+{% block title %}AI Manuscript Generator - Home{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-7">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h2 class="card-title">Create Complete Manuscripts with AI</h2>
+                <p class="card-text">
+                    Generate full-length manuscripts using a modular, agent-based AI framework that leverages both local (Ollama) and cloud-based (OpenAI) large language models.
+                </p>
+                <p class="card-text">
+                    Our system uses specialized agents for different writing tasks, creating a non-linear workflow with clear integration points and iterative feedback loops.
+                </p>
+                <div class="d-grid gap-2 d-md-flex justify-content-md-start mt-4">
+                    <a href="{{ url_for('generate') }}" class="btn btn-primary btn-lg px-4 me-md-2">
+                        <i data-feather="file-plus"></i> Start New Project
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">Key Features</h3>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="d-flex mb-3">
+                            <div class="feature-icon me-3 text-primary">
+                                <i data-feather="users"></i>
+                            </div>
+                            <div>
+                                <h5>Specialized AI Agents</h5>
+                                <p class="text-muted">Specialized agents for ideation, character development, world-building, research, outlining, writing, and editing.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex mb-3">
+                            <div class="feature-icon me-3 text-primary">
+                                <i data-feather="layers"></i>
+                            </div>
+                            <div>
+                                <h5>Modular Architecture</h5>
+                                <p class="text-muted">Non-linear workflow with clear integration points and parallel execution paths.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex mb-3">
+                            <div class="feature-icon me-3 text-primary">
+                                <i data-feather="database"></i>
+                            </div>
+                            <div>
+                                <h5>Dynamic Memory</h5>
+                                <p class="text-muted">Context-aware memory system for maintaining coherence across the manuscript.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex mb-3">
+                            <div class="feature-icon me-3 text-primary">
+                                <i data-feather="cpu"></i>
+                            </div>
+                            <div>
+                                <h5>Multiple LLM Support</h5>
+                                <p class="text-muted">Integrate both OpenAI and Ollama models for flexible deployment options.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">Workflow Process</h3>
+            </div>
+            <div class="card-body">
+                <div class="workflow-stages">
+                    <div class="workflow-stage completed">
+                        <span class="workflow-stage-icon"><i data-feather="bulb" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Ideation</span>
+                        <p class="small text-muted mb-0">Generate initial book concepts, themes, and ideas.</p>
+                    </div>
+                    <div class="workflow-stage completed">
+                        <span class="workflow-stage-icon"><i data-feather="users" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Character Development</span>
+                        <p class="small text-muted mb-0">Create detailed characters with backgrounds, motivations, and arcs.</p>
+                    </div>
+                    <div class="workflow-stage completed">
+                        <span class="workflow-stage-icon"><i data-feather="map" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">World Building</span>
+                        <p class="small text-muted mb-0">Design rich, immersive settings for your story.</p>
+                    </div>
+                    <div class="workflow-stage completed">
+                        <span class="workflow-stage-icon"><i data-feather="search" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Research</span>
+                        <p class="small text-muted mb-0">Gather relevant background information and facts.</p>
+                    </div>
+                    <div class="workflow-stage active">
+                        <span class="workflow-stage-icon"><i data-feather="git-merge" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Central Integration</span>
+                        <p class="small text-muted mb-0">Combine all elements into a cohesive foundation.</p>
+                    </div>
+                    <div class="workflow-stage">
+                        <span class="workflow-stage-icon"><i data-feather="edit-2" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Outlining</span>
+                        <p class="small text-muted mb-0">Create a detailed chapter-by-chapter outline.</p>
+                    </div>
+                    <div class="workflow-stage">
+                        <span class="workflow-stage-icon"><i data-feather="file-text" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Writing</span>
+                        <p class="small text-muted mb-0">Generate the full text of each chapter.</p>
+                    </div>
+                    <div class="workflow-stage">
+                        <span class="workflow-stage-icon"><i data-feather="check-circle" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Iterative Review</span>
+                        <p class="small text-muted mb-0">Analyze and critique the written content.</p>
+                    </div>
+                    <div class="workflow-stage">
+                        <span class="workflow-stage-icon"><i data-feather="refresh-cw" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Revision</span>
+                        <p class="small text-muted mb-0">Revise content based on feedback.</p>
+                    </div>
+                    <div class="workflow-stage">
+                        <span class="workflow-stage-icon"><i data-feather="edit" style="width: 16px; height: 16px;"></i></span>
+                        <span class="workflow-stage-name">Editorial</span>
+                        <p class="small text-muted mb-0">Final polishing and manuscript assembly.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <h3 class="mb-0">Models Used</h3>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <h5 class="mb-1">OpenAI - GPT-4o</h5>
+                            <p class="mb-0 text-muted small">Cloud-based LLM for high-quality content generation</p>
+                        </div>
+                        <span class="badge bg-primary rounded-pill">Optional</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <h5 class="mb-1">Ollama - deepseek-v2:16b</h5>
+                            <p class="mb-0 text-muted small">Local LLM for generating content</p>
+                        </div>
+                        <span class="badge bg-primary rounded-pill">Core</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <h5 class="mb-1">Ollama - snowflake-arctic-embed:335m</h5>
+                            <p class="mb-0 text-muted small">Embedding model for dynamic memory system</p>
+                        </div>
+                        <span class="badge bg-primary rounded-pill">Core</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

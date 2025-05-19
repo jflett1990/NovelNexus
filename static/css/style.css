@@ -1,0 +1,198 @@
+/* Custom styles for manuscript generator */
+
+/* Core colors */
+:root {
+  --primary-color: #4a6baf;
+  --secondary-color: #6c757d;
+  --accent-color: #5e35b1;
+  --success-color: #28a745;
+  --info-color: #17a2b8;
+  --warning-color: #ffc107;
+  --danger-color: #dc3545;
+  --light-color: #f8f9fa;
+  --dark-color: #343a40;
+  --bg-dark: #121212;
+}
+
+/* Main container styles */
+.main-container {
+  padding: 2rem 0;
+  min-height: calc(100vh - 120px);
+}
+
+/* Header and title styling */
+.site-header {
+  background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+  color: white;
+  padding: 1.5rem 0;
+  margin-bottom: 2rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.site-title {
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* Card styling */
+.card {
+  border: none;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1.5rem;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+}
+
+.card-header {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.125);
+  font-weight: 600;
+}
+
+/* Button styling */
+.btn-primary {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover {
+  background-color: #3d5a91;
+  border-color: #3d5a91;
+}
+
+.btn-outline-primary {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+/* Progress bar styling */
+.progress {
+  height: 1rem;
+  border-radius: 0.5rem;
+  margin: 1rem 0;
+}
+
+/* Workflow stages */
+.workflow-stages {
+  position: relative;
+  padding: 1rem 0;
+  margin-bottom: 2rem;
+}
+
+.workflow-stage {
+  position: relative;
+  padding: 1rem;
+  margin-bottom: 0.5rem;
+  border-radius: 0.25rem;
+  background-color: rgba(0, 0, 0, 0.03);
+  border-left: 3px solid var(--secondary-color);
+  transition: all 0.3s ease;
+}
+
+.workflow-stage.active {
+  background-color: rgba(74, 107, 175, 0.1);
+  border-left-color: var(--primary-color);
+}
+
+.workflow-stage.completed {
+  background-color: rgba(40, 167, 69, 0.1);
+  border-left-color: var(--success-color);
+}
+
+.workflow-stage-name {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.workflow-stage-icon {
+  background-color: var(--secondary-color);
+  color: white;
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
+  text-align: center;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+  display: inline-block;
+}
+
+.workflow-stage.active .workflow-stage-icon {
+  background-color: var(--primary-color);
+}
+
+.workflow-stage.completed .workflow-stage-icon {
+  background-color: var(--success-color);
+}
+
+/* Manuscript preview */
+.manuscript-preview {
+  font-family: 'Georgia', serif;
+  line-height: 1.8;
+  padding: 2rem;
+  background-color: #fff;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.manuscript-preview h1, 
+.manuscript-preview h2, 
+.manuscript-preview h3 {
+  font-family: 'Georgia', serif;
+  margin-top: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.manuscript-preview p {
+  margin-bottom: 1rem;
+  text-indent: 1.5rem;
+}
+
+/* Form styling */
+.form-control:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 0.25rem rgba(74, 107, 175, 0.25);
+}
+
+.form-label {
+  font-weight: 500;
+}
+
+/* Loading spinner */
+.spinner-border.text-primary {
+  color: var(--primary-color) !important;
+}
+
+/* Error styling */
+.alert-danger {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: var(--danger-color);
+  border-color: var(--danger-color);
+}
+
+/* Footer styling */
+.footer {
+  background-color: var(--dark-color);
+  color: rgba(255, 255, 255, 0.6);
+  padding: 2rem 0;
+  margin-top: 3rem;
+}
+
+.footer a {
+  color: rgba(255, 255, 255, 0.8);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  color: #fff;
+  text-decoration: underline;
+}

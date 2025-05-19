@@ -1,0 +1,118 @@
+{% extends "layout.html" %}
+
+{% block title %}Start New Manuscript Project{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Create a New Manuscript Project</h2>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('generate') }}" method="POST">
+                    <div class="mb-4">
+                        <h4>Basic Information</h4>
+                        <div class="mb-3">
+                            <label for="title" class="form-label">Book Title (optional)</label>
+                            <input type="text" class="form-control" id="title" name="title" placeholder="Leave blank to have AI generate a title">
+                            <div class="form-text">If left blank, a title will be generated based on your other inputs.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="genre" class="form-label">Genre</label>
+                            <select class="form-select" id="genre" name="genre" required>
+                                <option value="" selected disabled>Select a genre</option>
+                                <option value="fantasy">Fantasy</option>
+                                <option value="science_fiction">Science Fiction</option>
+                                <option value="mystery">Mystery</option>
+                                <option value="thriller">Thriller</option>
+                                <option value="romance">Romance</option>
+                                <option value="historical_fiction">Historical Fiction</option>
+                                <option value="literary_fiction">Literary Fiction</option>
+                                <option value="young_adult">Young Adult</option>
+                                <option value="horror">Horror</option>
+                                <option value="adventure">Adventure</option>
+                                <option value="dystopian">Dystopian</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="target_length" class="form-label">Target Length</label>
+                            <select class="form-select" id="target_length" name="target_length" required>
+                                <option value="short_story">Short Story (~7,500 words)</option>
+                                <option value="novella">Novella (~30,000 words)</option>
+                                <option value="novel" selected>Novel (~80,000 words)</option>
+                                <option value="epic_novel">Epic Novel (~120,000 words)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <h4>Configuration</h4>
+                        <div class="mb-3">
+                            <label for="complexity" class="form-label">Complexity Level</label>
+                            <select class="form-select" id="complexity" name="complexity">
+                                <option value="low">Low - Simpler plot and characters</option>
+                                <option value="medium" selected>Medium - Balanced complexity</option>
+                                <option value="high">High - Complex plot and deep character development</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Models to Use</label>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="use_openai" name="use_openai" checked>
+                                <label class="form-check-label" for="use_openai">Use OpenAI (GPT-4o)</label>
+                                <div class="form-text">Requires API key. If disabled, will use only Ollama models.</div>
+                            </div>
+                            <div class="form-check form-switch mt-2">
+                                <input class="form-check-input" type="checkbox" id="use_ollama" name="use_ollama" checked>
+                                <label class="form-check-label" for="use_ollama">Use Ollama (deepseek-v2:16b)</label>
+                                <div class="form-text">Requires local Ollama installation. Will be used as fallback if OpenAI fails.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <h4>Initial Prompt (Optional)</h4>
+                        <div class="mb-3">
+                            <label for="initial_prompt" class="form-label">Ideas or Concepts to Include</label>
+                            <textarea class="form-control" id="initial_prompt" name="initial_prompt" rows="4" placeholder="Enter any initial ideas, concepts, or themes you'd like to include in your manuscript..."></textarea>
+                            <div class="form-text">This will guide the ideation phase. You can leave it blank for completely AI-generated content.</div>
+                        </div>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i data-feather="play" class="me-2"></i> Start Generation
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Simple form validation
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.querySelector('form');
+        form.addEventListener('submit', function(event) {
+            const genreSelect = document.getElementById('genre');
+            if (genreSelect.value === '') {
+                event.preventDefault();
+                alert('Please select a genre');
+                genreSelect.focus();
+            }
+            
+            const useOpenAI = document.getElementById('use_openai').checked;
+            const useOllama = document.getElementById('use_ollama').checked;
+            
+            if (!useOpenAI && !useOllama) {
+                event.preventDefault();
+                alert('You must enable at least one model (OpenAI or Ollama)');
+            }
+        });
+    });
+</script>
+{% endblock %}
