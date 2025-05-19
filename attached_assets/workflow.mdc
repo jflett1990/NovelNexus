@@ -1,0 +1,35 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# 📊 Workflow Implementation
+
+## Execution Flow
+
+The project implements a modular workflow with multiple agents coordinated through integration hubs:
+
+```
+Ideation ──┬──▶ Character ────┐
+           ├──▶ World-Building├──▶ Central Integration ──▶ Outlining ──▶ Writing ──▶ Iterative Review ──▶ Revision ──▶ Editorial ──▶ Final Manuscript
+           └──▶ Research ─────┘
+```
+
+## Key Workflow Principles
+
+1. **Parallel Execution**: Character, World-Building, and Research agents run concurrently
+2. **Central Integration**: Minimal data integration at clearly defined hubs
+3. **Iterative Loops**: Clear feedback loops between Writing, Iterative Review, and Revision 
+
+## LangGraph Implementation
+
+The workflow is implemented using LangGraph for orchestration, which enables:
+
+- Non-linear, parallel execution paths
+- Conditional branching based on agent outputs
+- Visualization of the entire workflow
+- Monitoring of execution progress
+
+When implementing workflow components, ensure proper integration with the LangGraph orchestration system and maintain the parallel execution model where appropriate.
+
+Refer to [workflow.md](mdc:workflow.md) for workflow visualization and [implimentation_checklist.md](mdc:implimentation_checklist.md) for implementation details.
