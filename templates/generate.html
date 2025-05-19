@@ -57,16 +57,9 @@
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Models to Use</label>
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="use_openai" name="use_openai" checked>
-                                <label class="form-check-label" for="use_openai">Use OpenAI (GPT-4o)</label>
-                                <div class="form-text">Requires API key. If disabled, will use only Ollama models.</div>
-                            </div>
-                            <div class="form-check form-switch mt-2">
-                                <input class="form-check-input" type="checkbox" id="use_ollama" name="use_ollama" checked>
-                                <label class="form-check-label" for="use_ollama">Use Ollama (deepseek-v2:16b)</label>
-                                <div class="form-text">Requires local Ollama installation. Will be used as fallback if OpenAI fails.</div>
+                            <div class="alert alert-info">
+                                <strong>Note:</strong> Currently, this application is configured to use LangChain and LangSmith for orchestration. We're experiencing technical issues with model connectivity.
+                                <p class="mt-2 mb-0">To generate manuscripts, please ensure you have valid API credentials.</p>
                             </div>
                         </div>
                     </div>

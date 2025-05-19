@@ -15,9 +15,10 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "default-dev-secret")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Initialize models
+# Initialize models - only using Ollama due to OpenAI API quota issues
 initialize_ollama()
-initialize_openai()
+# OpenAI initialization disabled due to quota issues
+# initialize_openai()
 
 # Store active workflows
 active_workflows = {}
@@ -58,8 +59,8 @@ def generate():
                 'genre': request.form.get('genre'),
                 'target_length': request.form.get('target_length'),
                 'complexity': request.form.get('complexity', 'medium'),
-                'use_openai': request.form.get('use_openai') == 'on',
-                'use_ollama': request.form.get('use_ollama') == 'on',
+                'use_openai': False,  # Disabled due to API quota issues
+                'use_ollama': True,   # Always use Ollama
                 'initial_prompt': request.form.get('initial_prompt', '')
             }
             
