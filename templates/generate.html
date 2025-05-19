@@ -104,13 +104,8 @@ ollama pull snowflake-arctic-embed:335m</code></pre>
                 genreSelect.focus();
             }
             
-            const useOpenAI = document.getElementById('use_openai').checked;
-            const useOllama = document.getElementById('use_ollama').checked;
-            
-            if (!useOpenAI && !useOllama) {
-                event.preventDefault();
-                alert('You must enable at least one model (OpenAI or Ollama)');
-            }
+            // Simplified validation - Ollama validation happens on the server side
+            // We'll warn users if they haven't set up Ollama locally
         });
     });
 </script>

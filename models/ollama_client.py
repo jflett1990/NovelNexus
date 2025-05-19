@@ -68,7 +68,9 @@ class OllamaClient:
             payload["format"] = format
             
         if options:
-            payload["options"] = options
+            # Convert options to string to avoid type mismatch
+            for key, value in options.items():
+                payload[f"options.{key}"] = str(value)
             
         try:
             response = self.client.post(url, json=payload)
