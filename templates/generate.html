@@ -58,8 +58,14 @@
                         </div>
                         <div class="mb-3">
                             <div class="alert alert-info">
-                                <strong>Note:</strong> Currently, this application is configured to use LangChain and LangSmith for orchestration. We're experiencing technical issues with model connectivity.
-                                <p class="mt-2 mb-0">To generate manuscripts, please ensure you have valid API credentials.</p>
+                                <strong>Local Setup Required:</strong> This application uses Ollama for text generation and embeddings.
+                                <p class="mt-2">When running locally, please ensure you have:</p>
+                                <ol>
+                                    <li>Installed Ollama from <a href="https://ollama.ai" target="_blank">https://ollama.ai</a></li>
+                                    <li>Downloaded the required models with these commands:</li>
+                                </ol>
+                                <pre class="bg-light p-2 rounded"><code>ollama pull deepseek-v2:16b
+ollama pull snowflake-arctic-embed:335m</code></pre>
                             </div>
                         </div>
                     </div>

@@ -9,11 +9,19 @@
             <div class="card-body">
                 <h2 class="card-title">Create Complete Manuscripts with AI</h2>
                 <p class="card-text">
-                    Generate full-length manuscripts using a modular, agent-based AI framework that leverages both local (Ollama) and cloud-based (OpenAI) large language models.
+                    Generate full-length manuscripts using a modular, agent-based AI framework that leverages Ollama models for advanced text generation and embeddings.
                 </p>
                 <p class="card-text">
                     Our system uses specialized agents for different writing tasks, creating a non-linear workflow with clear integration points and iterative feedback loops.
                 </p>
+                <div class="alert alert-info mt-3">
+                    <h5><i data-feather="info"></i> Local Setup Instructions</h5>
+                    <p>To run this application locally with full functionality, please ensure:</p>
+                    <ul>
+                        <li>Ollama is installed and running (<a href="https://ollama.ai" target="_blank">https://ollama.ai</a>)</li>
+                        <li>Required models are available via: <code>ollama pull deepseek-v2:16b</code> and <code>ollama pull snowflake-arctic-embed:335m</code></li>
+                    </ul>
+                </div>
                 <div class="d-grid gap-2 d-md-flex justify-content-md-start mt-4">
                     <a href="{{ url_for('generate') }}" class="btn btn-primary btn-lg px-4 me-md-2">
                         <i data-feather="file-plus"></i> Start New Project
