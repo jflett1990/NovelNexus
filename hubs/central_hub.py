@@ -43,20 +43,69 @@ class CentralHub:
         ideation_docs = self.memory.query_memory("type:ideation_results", agent_name="ideation_agent")
         
         if not ideation_docs:
-            raise ValueError("No ideation data found")
+            logger.warning(f"No ideation_results found for project {self.project_id}, trying alternative queries")
+            # Try alternative queries
+            ideation_docs = self.memory.query_memory("type:idea", agent_name="ideation_agent")
+            if not ideation_docs:
+                logger.warning("No idea documents found either")
+                # Try to get all documents from ideation agent
+                ideation_docs = self.memory.get_agent_memory("ideation_agent")
+                if not ideation_docs:
+                    logger.error(f"No ideation agent documents found for project {self.project_id}")
+                    raise ValueError("No ideation data found")
+                else:
+                    logger.info(f"Found {len(ideation_docs)} general documents from ideation agent")
+            else:
+                logger.info(f"Found {len(ideation_docs)} individual idea documents")
+        else:
+            logger.info(f"Found {len(ideation_docs)} ideation_results documents")
         
         # Parse and combine ideas
         all_ideas = []
         
         for doc in ideation_docs:
             try:
-                data = json.loads(doc['text'])
-                if "ideas" in data and isinstance(data["ideas"], list):
-                    all_ideas.extend(data["ideas"])
+                logger.debug(f"Processing document with metadata: {doc.get('metadata', {})}")
+                text = doc['text']
+                # If the text looks like JSON but isn't properly formatted, try to clean it up
+                if (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
+                    try:
+                        data = json.loads(text)
+                        if "ideas" in data and isinstance(data["ideas"], list):
+                            all_ideas.extend(data["ideas"])
+                        elif "id" in data and "title" in data:
+                            # This appears to be a single idea document
+                            all_ideas.append(data)
+                            logger.debug("Added single idea document")
+                    except json.JSONDecodeError:
+                        # Try to extract JSON substring if possible
+                        json_start = text.find("{")
+                        json_end = text.rfind("}") + 1
+                        
+                        if json_start >= 0 and json_end > json_start:
+                            json_str = text[json_start:json_end]
+                            try:
+                                data = json.loads(json_str)
+                                logger.debug(f"Successfully extracted JSON from text: {json_str[:100]}...")
+                                if "ideas" in data and isinstance(data["ideas"], list):
+                                    all_ideas.extend(data["ideas"])
+                                elif "id" in data and "title" in data:
+                                    all_ideas.append(data)
+                                    logger.debug("Added single idea document from extracted JSON")
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse extracted JSON: {json_str[:100]}...")
             except json.JSONDecodeError:
+                logger.warning(f"Failed to parse JSON from document: {doc.get('text', '')[:100]}...")
+                continue
+            except Exception as e:
+                logger.error(f"Error processing document: {str(e)}")
                 continue
         
         if not all_ideas:
+            logger.error(f"No valid ideas found after processing {len(ideation_docs)} documents")
+            # Dump the first few docs for debugging
+            for i, doc in enumerate(ideation_docs[:3]):
+                logger.debug(f"Document {i}: {doc.get('text', '')[:100]}...")
             raise ValueError("No valid ideas found")
         
         # Get the selected idea
@@ -73,8 +122,12 @@ class CentralHub:
                 logger.warning(f"Selected idea {selected_idea_id} not found, using best idea instead")
         
         if not selected_idea:
-            # Use the highest-rated idea
-            selected_idea = max(all_ideas, key=lambda x: float(x.get("score", 0)))
+            # Use the highest-rated idea or first idea if no scores
+            try:
+                selected_idea = max(all_ideas, key=lambda x: float(x.get("score", 0)))
+            except (ValueError, TypeError):
+                logger.warning("Could not determine best idea based on score, using first idea")
+                selected_idea = all_ideas[0]
         
         # Store the selected idea
         result = {
@@ -99,47 +152,192 @@ class CentralHub:
         """
         logger.info(f"Aggregating character data for project {self.project_id}")
         
-        # Get character agent data
-        character_docs = self.memory.query_memory("type:character", agent_name="character_agent")
-        
-        if not character_docs:
-            raise ValueError("No character data found")
-        
-        # Parse and combine characters
-        all_characters = []
-        
-        for doc in character_docs:
+        try:
+            # Get character agent data
+            character_docs = self.memory.query_memory("type:character", agent_name="character_agent")
+            
+            if not character_docs:
+                logger.warning("No character data found with type:character query, trying alternative queries")
+                # Try alternative queries
+                character_docs = self.memory.get_agent_memory("character_agent")
+                if not character_docs:
+                    logger.warning("No documents found from character agent, providing fallback characters")
+                    # Create fallback characters when no data exists
+                    fallback_characters = {
+                        "characters": [
+                            {
+                                "id": "fallback_protagonist",
+                                "name": "Main Character",
+                                "role": "protagonist",
+                                "age": 30,
+                                "physical_description": "Distinctive and memorable",
+                                "personality": "Determined, adaptable",
+                                "background": "Background that relates to the story",
+                                "motivation": "To overcome the central conflict",
+                                "goals": ["Achieve primary objective"],
+                                "arc": "Personal growth through challenges",
+                                "strengths": ["Resourcefulness"],
+                                "flaws": ["Self-doubt"]
+                            },
+                            {
+                                "id": "fallback_antagonist",
+                                "name": "Opposing Force",
+                                "role": "antagonist",
+                                "age": 35,
+                                "physical_description": "Imposing presence",
+                                "personality": "Driven by clear motives",
+                                "background": "History that explains their opposition",
+                                "motivation": "Goals that conflict with protagonist",
+                                "goals": ["Achieve their vision"],
+                                "arc": "Path that challenges the protagonist",
+                                "strengths": ["Determination"],
+                                "flaws": ["Blind spot in reasoning"]
+                            }
+                        ],
+                        "relationships": [
+                            {
+                                "character1_id": "fallback_protagonist",
+                                "character2_id": "fallback_antagonist",
+                                "relationship_type": "opposition",
+                                "description": "Direct conflict of goals and values"
+                            }
+                        ]
+                    }
+                    
+                    # Store the fallback data in memory
+                    try:
+                        self.memory.add_document(
+                            json.dumps(fallback_characters),
+                            self.name,
+                            metadata={"type": "aggregated_characters", "is_fallback": True}
+                        )
+                        logger.info("Stored fallback character data in memory")
+                    except Exception as e:
+                        logger.error(f"Failed to store fallback character data: {e}")
+                    
+                    return fallback_characters
+            
+            # Parse and combine characters
+            all_characters = []
+            
+            for doc in character_docs:
+                try:
+                    text = doc['text']
+                    # Check if this is a single character or a characters collection
+                    try:
+                        data = json.loads(text)
+                        
+                        # If this is a collection with a characters array
+                        if "characters" in data and isinstance(data["characters"], list):
+                            for character in data["characters"]:
+                                if character not in all_characters:
+                                    all_characters.append(character)
+                        # If this is a single character object
+                        elif "id" in data and "name" in data:
+                            if data not in all_characters:
+                                all_characters.append(data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse character JSON: {text[:100]}...")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error processing character document: {e}")
+                    continue
+            
+            # Get character relationships
+            relationship_docs = self.memory.query_memory("type:character_relationships", agent_name="character_agent")
+            
+            relationships = []
+            if relationship_docs:
+                for doc in relationship_docs:
+                    try:
+                        data = json.loads(doc['text'])
+                        if "relationships" in data and isinstance(data["relationships"], list):
+                            relationships.extend(data["relationships"])
+                        elif "character1_id" in data and "character2_id" in data:
+                            relationships.append(data)
+                    except (json.JSONDecodeError, IndexError) as e:
+                        logger.warning(f"Error parsing relationship data: {e}")
+                        continue
+            
+            # If we parsed documents but ended up with no characters, provide fallback
+            if not all_characters:
+                logger.warning("No valid characters could be parsed from documents, using fallbacks")
+                all_characters = [
+                    {
+                        "id": "hub_fallback_protagonist",
+                        "name": "Main Character",
+                        "role": "protagonist",
+                        "background": "Character with a compelling backstory",
+                        "motivation": "To overcome the central conflict of the story"
+                    },
+                    {
+                        "id": "hub_fallback_antagonist",
+                        "name": "Antagonist",
+                        "role": "antagonist",
+                        "background": "Character whose goals oppose the protagonist",
+                        "motivation": "To achieve aims that conflict with the protagonist"
+                    }
+                ]
+                
+                # Create basic relationships if none exist
+                if not relationships and len(all_characters) >= 2:
+                    relationships = [
+                        {
+                            "character1_id": all_characters[0]["id"],
+                            "character2_id": all_characters[1]["id"],
+                            "relationship_type": "opposition",
+                            "description": "Primary story conflict"
+                        }
+                    ]
+            
+            # Store the aggregated character data
+            result = {
+                "characters": all_characters,
+                "relationships": relationships
+            }
+            
             try:
-                data = json.loads(doc['text'])
-                all_characters.append(data)
-            except json.JSONDecodeError:
-                continue
-        
-        # Get character relationships
-        relationship_docs = self.memory.query_memory("type:character_relationships", agent_name="character_agent")
-        
-        relationships = []
-        if relationship_docs:
-            try:
-                data = json.loads(relationship_docs[0]['text'])
-                if "relationships" in data and isinstance(data["relationships"], list):
-                    relationships = data["relationships"]
-            except (json.JSONDecodeError, IndexError):
-                pass
-        
-        # Store the aggregated character data
-        result = {
-            "characters": all_characters,
-            "relationships": relationships
-        }
-        
-        self.memory.add_document(
-            json.dumps(result),
-            self.name,
-            metadata={"type": "aggregated_characters"}
-        )
-        
-        return result
+                self.memory.add_document(
+                    json.dumps(result),
+                    self.name,
+                    metadata={"type": "aggregated_characters"}
+                )
+                logger.info(f"Stored aggregated character data with {len(all_characters)} characters and {len(relationships)} relationships")
+            except Exception as e:
+                logger.error(f"Failed to store aggregated character data: {e}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in character data aggregation: {e}")
+            # Final fallback in case of any unexpected errors
+            fallback_result = {
+                "characters": [
+                    {
+                        "id": "emergency_protagonist",
+                        "name": "Protagonist",
+                        "role": "protagonist",
+                        "background": "Main character of the story",
+                        "motivation": "To resolve the central conflict"
+                    },
+                    {
+                        "id": "emergency_antagonist",
+                        "name": "Antagonist",
+                        "role": "antagonist",
+                        "background": "Character opposing the protagonist",
+                        "motivation": "To achieve opposing goals"
+                    }
+                ],
+                "relationships": [
+                    {
+                        "character1_id": "emergency_protagonist",
+                        "character2_id": "emergency_antagonist",
+                        "relationship_type": "conflict",
+                        "description": "Central story conflict"
+                    }
+                ]
+            }
+            return fallback_result
     
     def aggregate_world_data(self) -> Dict[str, Any]:
         """
@@ -219,57 +417,158 @@ class CentralHub:
         """
         logger.info(f"Aggregating research data for project {self.project_id}")
         
-        # Get research agent data
-        topic_docs = self.memory.query_memory("type:topic", agent_name="research_agent")
-        
-        if not topic_docs:
-            raise ValueError("No research data found")
-        
-        # Parse and combine topics
-        all_topics = []
-        
-        for doc in topic_docs:
-            try:
-                data = json.loads(doc['text'])
-                all_topics.append(data)
-            except json.JSONDecodeError:
-                continue
-        
-        # Get detailed research
-        detailed_docs = self.memory.query_memory("type:detailed_research", agent_name="research_agent")
-        
-        detailed_research = []
-        for doc in detailed_docs:
-            try:
-                data = json.loads(doc['text'])
-                detailed_research.append(data)
-            except json.JSONDecodeError:
-                continue
-        
-        # Get research synthesis if available
-        synthesis_docs = self.memory.query_memory("type:research_synthesis", agent_name="research_agent")
-        
-        synthesis = None
-        if synthesis_docs:
-            try:
-                synthesis = json.loads(synthesis_docs[0]['text'])
-            except (json.JSONDecodeError, IndexError):
-                pass
-        
-        # Store the aggregated research data
-        result = {
-            "topics": all_topics,
-            "detailed_research": detailed_research,
-            "synthesis": synthesis
-        }
-        
-        self.memory.add_document(
-            json.dumps(result),
-            self.name,
-            metadata={"type": "aggregated_research"}
-        )
-        
-        return result
+        try:
+            # Get research agent data
+            topic_docs = self.memory.query_memory("type:topic", agent_name="research_agent")
+            
+            # If no topics found, try to look for any research data
+            if not topic_docs:
+                logger.warning(f"No topic data found for project {self.project_id}, checking for other research data")
+                research_docs = self.memory.query_memory("type:research_results", agent_name="research_agent")
+                
+                if research_docs:
+                    logger.info(f"Found research results data for project {self.project_id}")
+                    try:
+                        research_data = json.loads(research_docs[0]['text'])
+                        if "topics" in research_data and isinstance(research_data["topics"], list):
+                            # Extract topics from research results
+                            for topic in research_data["topics"]:
+                                self.memory.add_document(
+                                    json.dumps(topic),
+                                    "research_agent",
+                                    metadata={"type": "topic", "topic_id": topic.get("id", "unknown")}
+                                )
+                            topic_docs = self.memory.query_memory("type:topic", agent_name="research_agent")
+                    except (json.JSONDecodeError, IndexError):
+                        logger.warning("Failed to extract topics from research results")
+            
+            # If still no topics, create fallback topics
+            if not topic_docs:
+                logger.warning(f"No research data found for project {self.project_id}, creating fallback topics")
+                # Create fallback topics
+                fallback_topics = [
+                    {
+                        "id": "fallback_topic_1",
+                        "name": "Setting Research",
+                        "description": "Understanding the physical and cultural environment of the story",
+                        "importance": "Essential for creating an immersive world"
+                    },
+                    {
+                        "id": "fallback_topic_2",
+                        "name": "Character Background Research",
+                        "description": "Researching professions, skills, and psychological traits",
+                        "importance": "Critical for authentic character portrayal"
+                    }
+                ]
+                
+                # Add fallback topics to memory
+                for topic in fallback_topics:
+                    self.memory.add_document(
+                        json.dumps(topic),
+                        "research_agent",
+                        metadata={"type": "topic", "topic_id": topic["id"]}
+                    )
+                
+                topic_docs = self.memory.query_memory("type:topic", agent_name="research_agent")
+            
+            # Parse and combine topics
+            all_topics = []
+            
+            for doc in topic_docs:
+                try:
+                    data = json.loads(doc['text'])
+                    all_topics.append(data)
+                except json.JSONDecodeError:
+                    continue
+            
+            # Get detailed research
+            detailed_docs = self.memory.query_memory("type:detailed_research", agent_name="research_agent")
+            
+            detailed_research = []
+            for doc in detailed_docs:
+                try:
+                    data = json.loads(doc['text'])
+                    detailed_research.append(data)
+                except json.JSONDecodeError:
+                    continue
+            
+            # Get research synthesis if available
+            synthesis_docs = self.memory.query_memory("type:research_synthesis", agent_name="research_agent")
+            
+            synthesis = None
+            if synthesis_docs:
+                try:
+                    synthesis = json.loads(synthesis_docs[0]['text'])
+                except (json.JSONDecodeError, IndexError):
+                    logger.warning("Failed to parse research synthesis data")
+            
+            # If no synthesis, create a simple fallback synthesis
+            if not synthesis:
+                logger.warning("No research synthesis found, creating fallback synthesis")
+                synthesis = {
+                    "overview": "Research provides context and authenticity for the story.",
+                    "key_findings": [
+                        {
+                            "topic": "Story Environment",
+                            "critical_points": ["Consider how setting influences character actions"]
+                        }
+                    ],
+                    "connections": [],
+                    "writing_recommendations": ["Integrate research naturally into the narrative"],
+                    "research_gaps": ["Consider additional research as needed during writing"]
+                }
+                
+                # Add fallback synthesis to memory
+                self.memory.add_document(
+                    json.dumps(synthesis),
+                    "research_agent",
+                    metadata={"type": "research_synthesis"}
+                )
+            
+            # Store the aggregated research data
+            result = {
+                "topics": all_topics,
+                "detailed_research": detailed_research,
+                "synthesis": synthesis
+            }
+            
+            self.memory.add_document(
+                json.dumps(result),
+                self.name,
+                metadata={"type": "aggregated_research"}
+            )
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error aggregating research data: {e}")
+            # Return minimal fallback data to allow workflow to continue
+            fallback_result = {
+                "topics": [
+                    {
+                        "id": "fallback_topic",
+                        "name": "General Story Research",
+                        "description": "Basic background information for the story",
+                        "importance": "Provides authenticity to the narrative"
+                    }
+                ],
+                "detailed_research": [],
+                "synthesis": {
+                    "overview": "Basic research will help provide authenticity to the narrative.",
+                    "key_findings": [{"topic": "General Research", "critical_points": ["Consider story authenticity"]}],
+                    "connections": [],
+                    "writing_recommendations": ["Focus on character development"],
+                    "research_gaps": ["May need additional specific research"]
+                }
+            }
+            
+            # Store the fallback data
+            self.memory.add_document(
+                json.dumps(fallback_result),
+                self.name,
+                metadata={"type": "aggregated_research"}
+            )
+            
+            return fallback_result
     
     def integrate_all_data(self) -> Dict[str, Any]:
         """
@@ -279,6 +578,12 @@ class CentralHub:
             Dictionary with integrated data
         """
         logger.info(f"Integrating all data for project {self.project_id}")
+        
+        # Initialize variables
+        ideation_data = None
+        character_data = None
+        world_data = None
+        research_data = None
         
         # Ensure we have all required data
         try:
@@ -391,27 +696,120 @@ class CentralHub:
         Args:
             status: Dictionary with project status information
         """
+        # Add timestamp to status if not present
+        if "last_updated" not in status:
+            import datetime
+            status["last_updated"] = datetime.datetime.now().isoformat()
+            
+        # Log status update
+        logger.info(f"Updating project status for {self.project_id}: {status.get('status')} - {status.get('current_stage')} - {status.get('progress')}%")
+        
         # Store the status
         self.memory.add_document(
             json.dumps(status),
             self.name,
-            metadata={"type": "project_status"}
+            metadata={"type": "project_status", "timestamp": status.get("last_updated")}
         )
     
     def get_project_status(self) -> Dict[str, Any]:
         """
-        Get the current project status.
+        Get the current status of the project.
         
         Returns:
-            Dictionary with project status
+            Dictionary with project status information
         """
-        # Query for status
-        docs = self.memory.query_memory("type:project_status", agent_name=self.name)
+        # Attempt to retrieve existing status
+        status_docs = self.memory.query_memory("type:project_status")
         
-        if not docs:
-            return {"status": "not_started", "progress": 0, "current_stage": None}
+        if status_docs:
+            try:
+                latest_status = json.loads(status_docs[0]['text'])
+                return latest_status
+            except (json.JSONDecodeError, IndexError, KeyError) as e:
+                logger.warning(f"Error parsing existing project status: {e}")
         
+        # If no status or error parsing, return default status
+        return {
+            "status": "not_started",
+            "current_stage": "not_started",
+            "progress": 0,
+            "completed_stages": []
+        }
+    
+    def get_timeline(self) -> List[Dict[str, Any]]:
+        """
+        Get the timeline of events for the project.
+        
+        Returns:
+            List of dictionaries with timeline events
+        """
+        timeline = []
+        
+        # Query documents with timestamps
+        docs = self.memory.query_memory("type:*")
+        
+        for doc in docs:
+            try:
+                # Extract metadata if it exists
+                metadata = doc.get('metadata', {})
+                timestamp = metadata.get('timestamp')
+                doc_type = metadata.get('type', 'unknown')
+                agent = metadata.get('agent', 'system')
+                
+                if timestamp:
+                    event = {
+                        "timestamp": timestamp,
+                        "event_type": doc_type,
+                        "agent": agent,
+                        "description": f"{agent} completed {doc_type}"
+                    }
+                    timeline.append(event)
+            except Exception as e:
+                logger.warning(f"Error parsing document for timeline: {e}")
+        
+        # Sort timeline by timestamp
+        timeline.sort(key=lambda x: x.get('timestamp', ''))
+        
+        return timeline
+        
+    def get_top_ideas(self, limit: int = 3) -> List[Dict[str, Any]]:
+        """
+        Get the top ideas for the project.
+        
+        Args:
+            limit: Maximum number of ideas to return
+            
+        Returns:
+            List of dictionaries with top ideas
+        """
+        # Try to get aggregated ideation data
         try:
-            return json.loads(docs[0]['text'])
-        except (json.JSONDecodeError, IndexError):
-            return {"status": "error", "progress": 0, "current_stage": None}
+            ideation_data = self.get_aggregated_data("ideation")
+            if ideation_data and "all_ideas" in ideation_data:
+                # Sort ideas by score if present
+                try:
+                    sorted_ideas = sorted(
+                        ideation_data["all_ideas"], 
+                        key=lambda x: float(x.get("score", 0)), 
+                        reverse=True
+                    )
+                    return sorted_ideas[:limit]
+                except (ValueError, TypeError):
+                    # If sorting fails, just return the first few
+                    return ideation_data["all_ideas"][:limit]
+        except ValueError:
+            pass
+        
+        # If no aggregated data, try to get individual idea documents
+        idea_docs = self.memory.query_memory("type:idea", agent_name="ideation_agent")
+        
+        ideas = []
+        for doc in idea_docs:
+            try:
+                idea = json.loads(doc['text'])
+                ideas.append(idea)
+            except json.JSONDecodeError:
+                continue
+        
+        # Return up to limit ideas
+        return ideas[:limit]

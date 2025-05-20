@@ -2,8 +2,9 @@ import logging
 import json
 from typing import Dict, Any, List, Optional, Tuple
 import time
+import uuid
 
-from models.ollama_client import get_ollama_client
+
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.writing_schema import WRITING_SCHEMA
@@ -19,8 +20,7 @@ class WritingAgent:
         self,
         project_id: str,
         memory: DynamicMemory,
-        use_openai: bool = True,
-        use_ollama: bool = True
+        use_openai: bool = True
     ):
         """
         Initialize the Writing Agent.
@@ -29,14 +29,11 @@ class WritingAgent:
             project_id: Unique identifier for the project
             memory: Dynamic memory instance
             use_openai: Whether to use OpenAI models
-            use_ollama: Whether to use Ollama models
         """
         self.project_id = project_id
         self.memory = memory
         self.use_openai = use_openai
-        self.use_ollama = use_ollama
         
-        self.ollama_client = get_ollama_client() if use_ollama else None
         self.openai_client = get_openai_client() if use_openai else None
         
         self.name = "writing_agent"
@@ -46,122 +43,394 @@ class WritingAgent:
         self,
         chapter_data: Dict[str, Any],
         characters: List[Dict[str, Any]],
-        world_data: Dict[str, Any],
+        world: Dict[str, Any] = None,
+        research: List[Dict[str, Any]] = None,
+        outline: Dict[str, Any] = None,
         previously_written_chapters: Optional[List[Dict[str, Any]]] = None,
-        style_guide: Optional[Dict[str, Any]] = None
+        style_guide: Optional[Dict[str, Any]] = None,
+        fallback_title: str = "Untitled Chapter"
     ) -> Dict[str, Any]:
         """
-        Write a complete chapter based on the outline and related information.
+        Write a complete chapter based on the provided data.
         
         Args:
-            chapter_data: Dictionary containing the chapter outline
-            characters: List of character dictionaries
-            world_data: Dictionary with world building data
-            previously_written_chapters: Optional list of previously written chapters
-            style_guide: Optional style guide for writing
+            chapter_data: Information about the chapter to write
+            characters: List of character information
+            world: World building information (optional)
+            research: Research information (optional)
+            outline: Complete story outline (optional)
+            previously_written_chapters: List of previously written chapters (optional)
+            style_guide: Writing style guidelines (optional)
+            fallback_title: Title to use if not provided in chapter_data
             
         Returns:
-            Dictionary with the written chapter
+            Dictionary containing the chapter content
         """
-        logger.info(f"Writing chapter {chapter_data.get('id', 'unknown')} for project {self.project_id}")
+        # Set up fallbacks for optional parameters
+        world = world or {}
+        research = research or []
+        outline = outline or {}
+        previously_written_chapters = previously_written_chapters or []
+        style_guide = style_guide or {}
         
-        # Extract key information from chapter data
-        chapter_id = chapter_data.get("id", "unknown")
-        chapter_number = chapter_data.get("number", 0)
-        chapter_title = chapter_data.get("title", "Untitled Chapter")
+        # Extract chapter information
+        chapter_id = chapter_data.get("id", str(uuid.uuid4()))
+        chapter_title = chapter_data.get("title", fallback_title)
+        
+        # Generate story context for continuity
+        try:
+            story_context = self._generate_story_context(
+                chapter_data=chapter_data,
+                characters=characters,
+                world=world,
+                research=research,
+                outline=outline,
+                previously_written_chapters=previously_written_chapters
+            )
+        except Exception as e:
+            logger.error(f"Error generating story context: {str(e)}")
+            story_context = {
+                "chapter": {"id": chapter_id, "title": chapter_title},
+                "book": {"title": outline.get("title", "Untitled")}
+            }
+            
+        # Determine writing approach based on chapter complexity
+        if chapter_data.get("is_complex", False) or len(characters) > 5:
+            logger.info(f"Writing complex chapter {chapter_id} by scenes")
+            return self._write_chapter_by_scenes(chapter_data, characters, world, story_context, style_guide)
+        else:
+            logger.info(f"Writing chapter {chapter_id} as single unit")
+            return self._write_chapter_as_unit(chapter_data, characters, world, story_context, style_guide)
+    
+    def _generate_story_context(
+        self, 
+        chapter_data: Dict[str, Any],
+        characters: List[Dict[str, Any]],
+        world: Dict[str, Any],
+        research: List[Dict[str, Any]],
+        outline: Dict[str, Any],
+        previously_written_chapters: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate a structured context for the current chapter to assist the writing model.
+        
+        Args:
+            chapter_data: Information about the current chapter
+            characters: List of character data
+            world: World building information
+            research: Research information
+            outline: Complete story outline
+            previously_written_chapters: Previously written chapters
+            
+        Returns:
+            A dictionary containing structured context information
+        """
+        # Extract chapter information
+        chapter_id = chapter_data.get("id", "")
+        chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
+        chapter_summary = chapter_data.get("summary", "")
+        chapter_events = chapter_data.get("events", [])
+        
+        # Get book title and overall summary
+        book_title = outline.get("title", "Untitled")
+        book_summary = outline.get("summary", "")
+        
+        # Get previous chapter information if available
+        previous_chapter_summary = ""
+        if previously_written_chapters:
+            # Find the most recently written chapter
+            previous_chapters = [c for c in previously_written_chapters if c.get("id") != chapter_id]
+            if previous_chapters:
+                latest_chapter = previous_chapters[-1]
+                latest_content = latest_chapter.get("content", "")
+                # Create a brief summary of the last chapter - first 150 chars and last 150 chars
+                if latest_content:
+                    start = latest_content[:150] if len(latest_content) > 150 else latest_content
+                    end = latest_content[-150:] if len(latest_content) > 150 else ""
+                    previous_chapter_summary = f"Previous chapter: {latest_chapter.get('title', '')}\n\nStarting with: {start}...\n\nEnding with: {end}"
+        
+        # Extract relevant character information
+        characters_in_chapter = []
+        for character in characters:
+            char_name = character.get("name", "")
+            char_role = character.get("role", "")
+            char_description = character.get("description", "")
+            if char_name:
+                # Create a condensed character description
+                char_info = {
+                    "name": char_name,
+                    "role": char_role,
+                    "description": char_description[:300] if len(char_description) > 300 else char_description
+                }
+                characters_in_chapter.append(char_info)
+        
+        # Extract relevant world information
+        relevant_world_info = {}
+        if isinstance(world, dict):
+            # Get information about settings relevant to this chapter
+            settings = world.get("settings", {})
+            if settings:
+                relevant_world_info["settings"] = settings
+            
+            # Get information about the culture and society
+            culture = world.get("culture", {})
+            if culture:
+                relevant_world_info["culture"] = culture
+            
+            # Get specific environment details
+            environment = world.get("environment", {})
+            if environment:
+                relevant_world_info["environment"] = environment
+        
+        # Create research information
+        relevant_research = []
+        if research:
+            # Take the first 5 research items or fewer
+            for item in research[:5]:
+                topic = item.get("topic", "")
+                summary = item.get("summary", "")
+                if topic and summary:
+                    relevant_research.append({
+                        "topic": topic,
+                        "summary": summary[:200] if len(summary) > 200 else summary
+                    })
+        
+        # Create full context
+        context = {
+            "chapter": {
+                "id": chapter_id,
+                "title": chapter_title,
+                "summary": chapter_summary,
+                "events": chapter_events
+            },
+            "book": {
+                "title": book_title,
+                "summary": book_summary
+            },
+            "characters": characters_in_chapter,
+            "world": relevant_world_info,
+            "research": relevant_research,
+            "previous_chapter": previous_chapter_summary
+        }
+        
+        return context
+    
+    def _write_chapter_by_scenes(
+        self,
+        chapter_data: Dict[str, Any],
+        characters: List[Dict[str, Any]],
+        world: Dict[str, Any],
+        story_context: Dict[str, Any],
+        style_guide: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Write a chapter by breaking it down into individual scenes.
+        
+        Args:
+            chapter_data: Information about the chapter
+            characters: List of character data
+            world: World building information
+            story_context: Context information for the chapter
+            style_guide: Style guidelines
+            
+        Returns:
+            Dictionary containing the completed chapter
+        """
+        logger.info(f"Writing chapter {chapter_data.get('id', 'unknown')} by scenes")
+        
+        # Extract chapter information
+        chapter_id = chapter_data.get("id", str(uuid.uuid4()))
+        chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
         chapter_summary = chapter_data.get("summary", "")
         
-        # Extract scenes if available
+        # Get scenes from chapter data
         scenes = chapter_data.get("scenes", [])
-        scenes_text = ""
-        if scenes:
-            scenes_text = "\n\n".join([
-                f"Scene {i+1}: {scene.get('summary', '')}" for i, scene in enumerate(scenes)
-            ])
         
-        # Prepare character information
-        characters_text = ""
-        featured_characters = chapter_data.get("featured_characters", [])
-        if featured_characters and characters:
-            # Filter to just featured characters
-            relevant_characters = [char for char in characters if char.get("name", "") in featured_characters]
+        # If no scenes are defined, create a default scene structure
+        if not scenes:
+            logger.warning(f"No scenes defined for chapter {chapter_id}, creating default scene structure")
+            scenes = [
+                {"id": f"{chapter_id}-scene-1", "description": "Opening scene of the chapter"},
+                {"id": f"{chapter_id}-scene-2", "description": "Middle scene with rising action"},
+                {"id": f"{chapter_id}-scene-3", "description": "Closing scene with resolution or cliffhanger"}
+            ]
+        
+        # Write each scene
+        scene_contents = []
+        for i, scene in enumerate(scenes):
+            scene_id = scene.get("id", f"{chapter_id}-scene-{i+1}")
+            scene_description = scene.get("description", "")
             
-            if relevant_characters:
-                char_summaries = []
-                for char in relevant_characters:
-                    name = char.get("name", "Unknown")
-                    desc = char.get("brief_description", "")
-                    voice = char.get("voice", "")
-                    char_summaries.append(f"- {name}: {desc}" + "\n" + f"Voice: {voice}")
+            logger.info(f"Writing scene {i+1}/{len(scenes)} for chapter {chapter_id}")
+            
+            # Build the system prompt for this scene
+            system_prompt = """You are an expert creative writer crafting a scene within a book chapter.
+Write engaging, vivid prose that advances the story and develops characters.
+Focus on 'showing, not telling' with descriptive language, authentic dialogue, and sensory details.
+The scene should have a clear purpose, emotional arc, and connection to the overall chapter goal."""
+            
+            if style_guide:
+                # Add style guide information
+                tone = style_guide.get("tone", "")
+                perspective = style_guide.get("perspective", "")
+                tense = style_guide.get("tense", "")
                 
-                characters_text = "\n".join(char_summaries)
+                style_notes = f"Tone: {tone}\nPerspective: {perspective}\nTense: {tense}"
+                system_prompt += f"\n\nFollow these style guidelines:\n{style_notes}"
+            
+            # Build the user prompt
+            user_prompt = f"""Write scene {i+1} of {len(scenes)} for Chapter: {chapter_title}
+
+Chapter Summary:
+{chapter_summary}
+
+Scene Description:
+{scene_description}
+
+Context for this scene:
+- Book title: {story_context.get('book', {}).get('title', 'Untitled')}
+- Previous events: {story_context.get('previous_chapter', 'No previous context')}
+
+Characters in this scene:
+{json.dumps([c for c in characters[:3]], indent=2)}
+
+Write only this scene as polished prose, focusing on the described events and character interactions.
+Do not include scene numbers, headers, or meta-information - write just the scene content.
+"""
+            
+            try:
+                # Try OpenAI first if available
+                if self.use_openai and self.openai_client and self.openai_client.is_available():
+                    try:
+                        response = self.openai_client.generate(
+                            prompt=user_prompt,
+                            system_prompt=system_prompt,
+                            temperature=0.7,
+                            max_tokens=2000
+                        )
+                        
+                        scene_content = response["content"]
+                        logger.info(f"Generated scene {i+1} for chapter {chapter_id} using OpenAI")
+                        scene_contents.append(scene_content)
+                        continue
+                    except Exception as e:
+                        logger.warning(f"OpenAI scene generation failed: {e}, falling back to Ollama")
+                
+                # Fall back to Ollama
+                if self.use_ollama and self.ollama_client:
+                    response = self.ollama_client.generate(
+                        prompt=user_prompt,
+                        system=system_prompt,
+                        model="deepseek-v2:16b",
+                        temperature=0.7
+                    )
+                    
+                    scene_content = response.get("response", "")
+                    logger.info(f"Generated scene {i+1} for chapter {chapter_id} using Ollama")
+                    scene_contents.append(scene_content)
+                    continue
+                
+                raise Exception("No available AI service (OpenAI or Ollama) to generate scene")
+                
+            except Exception as e:
+                logger.error(f"Scene generation error: {str(e)}")
+                # Add an error placeholder for this scene
+                scene_contents.append(f"[Scene {i+1} could not be generated due to an error: {str(e)}]")
         
-        # Extract previous chapter summaries if available
-        previous_chapters_text = ""
-        if previously_written_chapters:
-            # Only include the last 3 chapters to avoid overwhelming the model
-            recent_chapters = previously_written_chapters[-3:]
-            summaries = []
-            for i, prev_chapter in enumerate(recent_chapters):
-                prev_num = prev_chapter.get("number", 0)
-                prev_title = prev_chapter.get("title", "Untitled")
-                prev_summary = prev_chapter.get("summary", "")
-                summaries.append(f"Chapter {prev_num}: {prev_title}" + "\n" + f"{prev_summary}")
-            
-            previous_chapters_text = "\n\n".join(summaries)
+        # Combine scenes into a full chapter
+        chapter_content = "\n\n" + "\n\n".join(scene_contents)
         
-        # Extract style information if available
-        style_text = ""
-        if style_guide:
-            voice = style_guide.get("voice", "")
-            tone = style_guide.get("tone", "")
-            pov = style_guide.get("point_of_view", "")
-            tense = style_guide.get("tense", "")
+        # Create the chapter object
+        chapter = {
+            "id": chapter_id,
+            "title": chapter_title,
+            "content": chapter_content,
+            "scenes": scenes
+        }
+        
+        # Store in memory
+        self.memory.add_document(
+            json.dumps(chapter),
+            self.name,
+            metadata={"type": "chapter", "chapter_id": chapter_id}
+        )
+        
+        return chapter
+    
+    def _write_chapter_as_unit(
+        self,
+        chapter_data: Dict[str, Any],
+        characters: List[Dict[str, Any]],
+        world: Dict[str, Any],
+        story_context: Dict[str, Any],
+        style_guide: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Write a chapter as a single unit (for less complex chapters).
+        
+        Args:
+            chapter_data: Information about the chapter
+            characters: List of character data
+            world: World building information
+            story_context: Context information for the chapter
+            style_guide: Style guidelines
             
-            style_text = f"Voice: {voice}\nTone: {tone}\nPoint of View: {pov}\nTense: {tense}"
-            
-            if "examples" in style_guide:
-                style_text += "\n\nStyle Examples:\n" + "\n".join(style_guide["examples"])
+        Returns:
+            Dictionary containing the completed chapter
+        """
+        logger.info(f"Writing chapter {chapter_data.get('id', 'unknown')} as a single unit")
+        
+        # Extract chapter information
+        chapter_id = chapter_data.get("id", str(uuid.uuid4()))
+        chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
+        chapter_summary = chapter_data.get("summary", "")
         
         # Build the system prompt
-        system_prompt = """You are an expert author capable of writing engaging, high-quality book chapters.
-Your task is to write a complete chapter based on the provided outline, characters, and world details.
-The writing should be professional quality, with natural dialogue, vivid descriptions, and compelling narrative.
-Match any specified style guidelines and maintain consistency with previously written chapters.
-Your output should be ready-to-read prose that requires minimal editing."""
+        system_prompt = """You are an expert creative writer crafting a book chapter.
+Write an engaging, well-structured chapter that advances the story and develops characters.
+Focus on 'showing, not telling' with descriptive language, authentic dialogue, and sensory details.
+The chapter should have a clear beginning, middle, and end with proper flow and pacing."""
+        
+        if style_guide:
+            # Add style guide information
+            tone = style_guide.get("tone", "")
+            perspective = style_guide.get("perspective", "")
+            tense = style_guide.get("tense", "")
+            
+            style_notes = f"Tone: {tone}\nPerspective: {perspective}\nTense: {tense}"
+            system_prompt += f"\n\nFollow these style guidelines:\n{style_notes}"
+        
+        # Get character information (limit to 3 most important characters)
+        main_characters = characters[:3] if characters else []
         
         # Build the user prompt
-        # Build the prompt in parts to avoid f-string backslash issues
-        user_prompt = f"Write Chapter {chapter_number}: {chapter_title} based on the following outline:\n\n"
-        user_prompt += f"Chapter Summary:\n{chapter_summary}\n\n"
-        
-        if scenes_text:
-            user_prompt += f"Scenes:\n{scenes_text}\n\n"
-            
-        if characters_text:
-            user_prompt += f"Featured Characters:\n{characters_text}\n\n"
-            
-        if previous_chapters_text:
-            user_prompt += f"Previously Written Chapters:\n{previous_chapters_text}\n\n"
-            
-        if style_text:
-            user_prompt += f"Style Guidelines:\n{style_text}\n\n"
-            
-        user_prompt += f"World/Setting Context:\n{world_data.get('primary_setting', 'Unknown setting')}, {world_data.get('time_period', 'Unknown time period')}\n\n"
-        user_prompt += "Write a complete, engaging chapter that follows this outline.\n"
-        user_prompt += "Include natural dialogue, vivid descriptions, and compelling narrative development.\n"
-        user_prompt += "The chapter should advance the plot while developing characters and themes."
+        user_prompt = f"""Write Chapter: {chapter_title}
+
+Chapter Summary:
+{chapter_summary}
+
+Story Context:
+- Book title: {story_context.get('book', {}).get('title', 'Untitled')}
+- Book summary: {story_context.get('book', {}).get('summary', 'No summary available')}
+- Previous events: {story_context.get('previous_chapter', 'No previous context')}
+
+Characters in this chapter:
+{json.dumps(main_characters, indent=2)}
+
+Write a complete, engaging chapter that follows this outline. Include:
+1. Vivid descriptions of settings and characters
+2. Meaningful dialogue that advances plot and reveals character
+3. Internal thoughts and emotions where appropriate
+4. Clear narrative flow
+5. Pacing appropriate to the events described
+
+The chapter should be well-structured prose with proper paragraphing.
+Do not include any meta-text or explanations - write only the chapter content.
+"""
         
         try:
-            # Generate chapter in parts if needed
-            if scenes and len(scenes) > 3:
-                # For chapters with many scenes, generate each scene separately
-                return self._write_chapter_by_scenes(
-                    chapter_data, characters, world_data, previously_written_chapters, style_guide
-                )
-            
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
+            # Try OpenAI first if available
+            if self.use_openai and self.openai_client and self.openai_client.is_available():
                 try:
                     response = self.openai_client.generate(
                         prompt=user_prompt,
@@ -170,237 +439,76 @@ Your output should be ready-to-read prose that requires minimal editing."""
                         max_tokens=4000
                     )
                     
-                    chapter_text = response["text"]
+                    chapter_content = response["content"]
                     logger.info(f"Generated chapter {chapter_id} using OpenAI")
                     
-                    # Store the complete chapter
-                    written_chapter = {
+                    # Create the chapter object
+                    chapter = {
                         "id": chapter_id,
-                        "number": chapter_number,
                         "title": chapter_title,
-                        "content": chapter_text,
-                        "word_count": len(chapter_text.split()),
-                        "summary": chapter_summary
+                        "content": chapter_content
                     }
                     
-                    self._store_in_memory(written_chapter)
+                    # Store in memory
+                    self.memory.add_document(
+                        json.dumps(chapter),
+                        self.name,
+                        metadata={"type": "chapter", "chapter_id": chapter_id}
+                    )
                     
-                    return written_chapter
+                    return chapter
                 except Exception as e:
-                    logger.warning(f"OpenAI chapter writing failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI chapter generation failed: {e}, falling back to Ollama")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
+            # Fall back to Ollama
             if self.use_ollama and self.ollama_client:
                 response = self.ollama_client.generate(
                     prompt=user_prompt,
-                    system=system_prompt
+                    system=system_prompt,
+                    model="deepseek-v2:16b",
+                    temperature=0.7,
+                    context_window=24000
                 )
                 
-                chapter_text = response.get("response", "")
+                chapter_content = response.get("response", "")
                 logger.info(f"Generated chapter {chapter_id} using Ollama")
                 
-                # Store the complete chapter
-                written_chapter = {
+                # Create the chapter object
+                chapter = {
                     "id": chapter_id,
-                    "number": chapter_number,
                     "title": chapter_title,
-                    "content": chapter_text,
-                    "word_count": len(chapter_text.split()),
-                    "summary": chapter_summary
+                    "content": chapter_content
                 }
                 
-                self._store_in_memory(written_chapter)
+                # Store in memory
+                self.memory.add_document(
+                    json.dumps(chapter),
+                    self.name,
+                    metadata={"type": "chapter", "chapter_id": chapter_id}
+                )
                 
-                return written_chapter
+                return chapter
             
-            raise Exception("No available AI service (OpenAI or Ollama) to write chapter")
+            raise Exception("No available AI service (OpenAI or Ollama) to generate chapter")
             
         except Exception as e:
-            logger.error(f"Chapter writing error: {e}")
-            raise Exception(f"Failed to write chapter: {e}")
-    
-    def _write_chapter_by_scenes(
-        self,
-        chapter_data: Dict[str, Any],
-        characters: List[Dict[str, Any]],
-        world_data: Dict[str, Any],
-        previously_written_chapters: Optional[List[Dict[str, Any]]] = None,
-        style_guide: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Write a chapter by generating each scene separately and combining them.
-        
-        Args:
-            chapter_data: Dictionary containing the chapter outline
-            characters: List of character dictionaries
-            world_data: Dictionary with world building data
-            previously_written_chapters: Optional list of previously written chapters
-            style_guide: Optional style guide for writing
+            logger.error(f"Chapter generation error: {str(e)}")
             
-        Returns:
-            Dictionary with the written chapter
-        """
-        chapter_id = chapter_data.get("id", "unknown")
-        chapter_number = chapter_data.get("number", 0)
-        chapter_title = chapter_data.get("title", "Untitled Chapter")
-        chapter_summary = chapter_data.get("summary", "")
-        scenes = chapter_data.get("scenes", [])
-        
-        logger.info(f"Writing chapter {chapter_id} by scenes (total: {len(scenes)} scenes)")
-        
-        # Extract style information if available
-        style_text = ""
-        if style_guide:
-            voice = style_guide.get("voice", "")
-            tone = style_guide.get("tone", "")
-            pov = style_guide.get("point_of_view", "")
-            tense = style_guide.get("tense", "")
+            # Create a minimal chapter structure with error message
+            chapter = {
+                "id": chapter_id,
+                "title": chapter_title,
+                "content": f"[This chapter could not be generated due to an error: {str(e)}]\n\nPlaceholder content based on the outline:\n\n{chapter_summary}"
+            }
             
-            style_text = f"Voice: {voice}\nTone: {tone}\nPoint of View: {pov}\nTense: {tense}"
-        
-        # Generate each scene
-        scene_contents = []
-        for i, scene in enumerate(scenes):
-            scene_summary = scene.get("summary", "")
-            scene_characters = scene.get("characters", [])
-            scene_location = scene.get("location", "")
+            # Still store this placeholder in memory
+            self.memory.add_document(
+                json.dumps(chapter),
+                self.name,
+                metadata={"type": "chapter", "chapter_id": chapter_id, "is_error_placeholder": True}
+            )
             
-            # Get character information for this scene
-            scene_character_text = ""
-            if scene_characters and characters:
-                relevant_characters = [char for char in characters if char.get("name", "") in scene_characters]
-                
-                if relevant_characters:
-                    char_summaries = []
-                    for char in relevant_characters:
-                        name = char.get("name", "Unknown")
-                        desc = char.get("brief_description", "")
-                        char_summaries.append(f"- {name}: {desc}")
-                    
-                    scene_character_text = "\n".join(char_summaries)
-            
-            # Build the system prompt for this scene
-            system_prompt = """You are an expert author writing a scene for a book chapter.
-Write a vivid, engaging scene that follows the provided scene outline and fits within the larger chapter context.
-Include natural dialogue, rich descriptions, and compelling character interactions.
-Match the specified style guidelines and maintain narrative consistency."""
-            
-            # Build the user prompt for this scene in parts to avoid f-string backslash issues
-            user_prompt = f"Write Scene {i+1} for Chapter {chapter_number}: {chapter_title}\n\n"
-            user_prompt += f"Chapter Context:\n{chapter_summary}\n\n"
-            user_prompt += f"Scene Summary:\n{scene_summary}\n\n"
-            
-            if scene_location:
-                user_prompt += f"Scene Location: {scene_location}\n\n"
-                
-            if scene_character_text:
-                user_prompt += f"Characters in this scene:\n{scene_character_text}\n\n"
-                
-            if style_text:
-                user_prompt += f"Style Guidelines:\n{style_text}\n\n"
-                
-            user_prompt += "Write this scene with natural dialogue, vivid descriptions, and compelling narrative.\n"
-            user_prompt += "The scene should flow naturally and advance the chapter's goals."
-            
-            try:
-                scene_text = ""
-                
-                # Try OpenAI first if enabled
-                if self.use_openai and self.openai_client:
-                    try:
-                        response = self.openai_client.generate(
-                            prompt=user_prompt,
-                            system_prompt=system_prompt,
-                            temperature=0.7,
-                            max_tokens=3000
-                        )
-                        
-                        scene_text = response["text"]
-                        logger.info(f"Generated scene {i+1} for chapter {chapter_id} using OpenAI")
-                    except Exception as e:
-                        logger.warning(f"OpenAI scene writing failed: {e}, falling back to Ollama")
-                
-                # Fall back to Ollama if OpenAI failed or is not enabled
-                if (not scene_text) and self.use_ollama and self.ollama_client:
-                    response = self.ollama_client.generate(
-                        prompt=user_prompt,
-                        system=system_prompt
-                    )
-                    
-                    scene_text = response.get("response", "")
-                    logger.info(f"Generated scene {i+1} for chapter {chapter_id} using Ollama")
-                
-                if scene_text:
-                    scene_contents.append(scene_text)
-                else:
-                    raise Exception("No available AI service to write scene")
-                
-                # Small delay to avoid rate limits
-                time.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"Scene writing error for scene {i+1}: {e}")
-                scene_contents.append(f"[Error generating scene {i+1}: {str(e)}]")
-        
-        # Combine all scenes into a complete chapter
-        chapter_text = "\n\n".join(scene_contents)
-        
-        # Add transitions if needed
-        if len(scene_contents) > 1:
-            transition_prompt = f"""I have written Chapter {chapter_number}: {chapter_title} as separate scenes.
-Please create smooth transitions between these scenes to make the chapter flow naturally as a cohesive whole.
-Return ONLY the transitions text, numbered by which scenes they connect (e.g., "1-2: [transition text]")."""
-            
-            try:
-                transitions = {}
-                
-                if self.use_openai and self.openai_client:
-                    response = self.openai_client.generate(
-                        prompt=transition_prompt + "\n\n" + chapter_text,
-                        system_prompt="You are an expert editor who creates smooth transitions between scenes in a book chapter.",
-                        temperature=0.7,
-                        max_tokens=1500
-                    )
-                    
-                    transition_text = response["text"]
-                    
-                    # Parse transitions
-                    for line in transition_text.split("\n"):
-                        if ":" in line and "-" in line.split(":")[0]:
-                            try:
-                                key, value = line.split(":", 1)
-                                scene_nums = key.strip().split("-")
-                                if len(scene_nums) == 2:
-                                    start = int(scene_nums[0]) - 1
-                                    transitions[start] = value.strip()
-                            except (ValueError, IndexError):
-                                continue
-                
-                # Apply transitions to the chapter
-                if transitions:
-                    new_scene_contents = []
-                    for i, scene in enumerate(scene_contents):
-                        new_scene_contents.append(scene)
-                        if i in transitions:
-                            new_scene_contents.append(transitions[i])
-                    
-                    chapter_text = "\n\n".join(new_scene_contents)
-            except Exception as e:
-                logger.warning(f"Failed to create transitions: {e}")
-        
-        # Store the complete chapter
-        written_chapter = {
-            "id": chapter_id,
-            "number": chapter_number,
-            "title": chapter_title,
-            "content": chapter_text,
-            "word_count": len(chapter_text.split()),
-            "summary": chapter_summary
-        }
-        
-        self._store_in_memory(written_chapter)
-        
-        return written_chapter
+            return chapter
     
     def rewrite_section(
         self,

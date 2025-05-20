@@ -5,6 +5,8 @@ import threading
 import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable, Union
+import os
+import traceback
 
 # Custom graph implementation to avoid LangChain dependency issues
 class Node:
@@ -66,6 +68,12 @@ from agents.writing_agent import WritingAgent
 from agents.review_agent import ReviewAgent
 from agents.revision_agent import RevisionAgent
 from agents.editorial_agent import EditorialAgent
+from agents.plot_agent import PlotAgent
+from agents.manuscript_agent import ManuscriptAgent
+from agents.chapter_planner_agent import ChapterPlannerAgent
+from agents.chapter_writer_agent import ChapterWriterAgent
+from agents.longform_expander import LongformExpander
+from agents.manuscript_refiner import ManuscriptRefiner
 
 # Import integration hub
 from hubs.central_hub import CentralHub
@@ -74,7 +82,6 @@ from hubs.central_hub import CentralHub
 from memory.dynamic_memory import DynamicMemory
 
 # Import embedding functionality
-from models.ollama_client import get_ollama_client
 from models.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
@@ -88,678 +95,448 @@ class ManuscriptWorkflow:
     and providing a central orchestration point.
     """
     
-    def __init__(self, project_id: str, config: Dict[str, Any]):
+    def __init__(
+        self,
+        project_id: str,
+        title: str = "",
+        genre: str = "",
+        target_length: str = "medium",
+        complexity: str = "medium",
+        embedding_model: str = "text-embedding-3-large",
+        use_openai: bool = True,
+        use_gpu: bool = False,
+        initial_prompt: str = "",
+    ):
         """
         Initialize the manuscript workflow.
         
         Args:
-            project_id: Unique identifier for the project
-            config: Configuration dictionary with workflow parameters
+            project_id: Unique ID for the project
+            title: Title for the book
+            genre: Genre of the book
+            target_length: Target length (short, medium, long)
+            complexity: Complexity level (simple, medium, complex)
+            embedding_model: Model to use for embeddings
+            use_openai: Whether to use OpenAI for generation
+            use_gpu: Whether to use GPU for generation
+            initial_prompt: Initial prompt to seed the workflow
         """
         self.project_id = project_id
-        self.config = config
+        self.title = title
+        self.genre = genre
+        self.target_length = target_length
+        self.complexity = complexity
+        self.embedding_model = embedding_model
+        self.use_openai = use_openai
+        self.use_gpu = use_gpu
+        self.initial_prompt = initial_prompt
         
-        # Extract key configuration
-        self.title = config.get("title", "Untitled Book")
-        self.genre = config.get("genre", "")
-        self.target_length = config.get("target_length", "novel")
-        self.complexity = config.get("complexity", "medium")
-        self.use_openai = config.get("use_openai", True)
-        self.use_ollama = config.get("use_ollama", True)
-        self.initial_prompt = config.get("initial_prompt", "")
-        
-        # Determine target word count based on target_length
-        self.target_word_count = self._get_target_word_count(self.target_length)
-        
-        # Set up dynamic memory with appropriate embedding function
-        self.memory = self._initialize_memory()
-        
-        # Initialize the central hub
-        self.central_hub = CentralHub(project_id, self.memory)
-        
-        # Initialize agents
-        self.agents = self._initialize_agents()
-        
-        # Initialize workflow state
+        # Status tracking
         self.is_running = False
         self.is_complete = False
-        self.current_stage = None
-        self.status = "initialized"
-        self.progress = 0
+        self.thread = None
         self.start_time = None
-        self.end_time = None
+        self.last_progress_time = None
+        self.agent_start_time = None
+        self.current_stage = None
+        self.current_agent = None
         self.completed_stages = []
         self.errors = []
         
-        # Initialize workflow thread
-        self.workflow_thread = None
+        # Create memory directory if it doesn't exist
+        os.makedirs(f"memory_data/{project_id}", exist_ok=True)
         
-        # Initialize workflow graph for visualization
-        self.graph = self._initialize_workflow_graph()
-    
-    def _initialize_memory(self) -> DynamicMemory:
-        """Initialize the dynamic memory system with the appropriate embedding function."""
-        # Set up the embedding function based on configuration
-        if self.use_openai:
-            openai_client = get_openai_client()
-            if openai_client.is_available():
-                embedding_function = lambda text: openai_client.get_embeddings(text, model="text-embedding-3-small")
-                vector_dimension = 1536  # OpenAI embedding dimension
-                logger.info(f"Using OpenAI embeddings for project {self.project_id}")
-                return DynamicMemory(self.project_id, embedding_function, vector_dimension=vector_dimension)
+        # Initialize memory with OpenAI embeddings
+        self.openai_client = get_openai_client()
+        embedding_function = lambda text: self.openai_client.get_embeddings(text, model=embedding_model)
+        self.memory = DynamicMemory(project_id, embedding_function)
+        self.central_hub = CentralHub(project_id, self.memory)
         
-        if self.use_ollama:
-            ollama_client = get_ollama_client()
-            embedding_function = lambda text: ollama_client.get_embeddings(text, model="snowflake-arctic-embed:335m")
-            vector_dimension = 384  # snowflake-arctic-embed dimension
-            logger.info(f"Using Ollama embeddings for project {self.project_id}")
-            return DynamicMemory(self.project_id, embedding_function, vector_dimension=vector_dimension)
-        
-        # Fallback to Ollama if nothing else is available
-        ollama_client = get_ollama_client()
-        embedding_function = lambda text: ollama_client.get_embeddings(text, model="snowflake-arctic-embed:335m")
-        vector_dimension = 384
-        logger.info(f"Falling back to Ollama embeddings for project {self.project_id}")
-        return DynamicMemory(self.project_id, embedding_function, vector_dimension=vector_dimension)
-    
-    def _initialize_agents(self) -> Dict[str, Any]:
-        """Initialize all agents needed for the workflow."""
-        return {
-            "ideation": IdeationAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "character": CharacterAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "world_building": WorldBuildingAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "research": ResearchAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "outline": OutlineAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "writing": WritingAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "review": ReviewAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "revision": RevisionAgent(self.project_id, self.memory, self.use_openai, self.use_ollama),
-            "editorial": EditorialAgent(self.project_id, self.memory, self.use_openai, self.use_ollama)
+        # Create all agents
+        self.agents = {
+            "ideation": IdeationAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "character": CharacterAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "world_building": WorldBuildingAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "research": ResearchAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "outline": OutlineAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "chapter_planner": ChapterPlannerAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "chapter_writer": ChapterWriterAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "review": ReviewAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "revision": RevisionAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "editorial": EditorialAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "expander": LongformExpander(
+                model_name="gpt-4o"
+            ),
+            "manuscript": ManuscriptAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
+            "refiner": ManuscriptRefiner(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            )
         }
+        
+        # Initialize workflow data
+        self._initialize_data()
+        self.config = {}
     
-    def _initialize_workflow_graph(self) -> Graph:
-        """Initialize the workflow graph for visualization."""
-        graph = Graph()
-        
-        # Add nodes for each stage
-        nodes = [
-            Node(id="ideation", label="Ideation", type="stage"),
-            Node(id="character", label="Character Development", type="stage"),
-            Node(id="world_building", label="World Building", type="stage"),
-            Node(id="research", label="Research", type="stage"),
-            Node(id="central_integration", label="Central Integration", type="hub"),
-            Node(id="outline", label="Outlining", type="stage"),
-            Node(id="writing", label="Writing", type="stage"),
-            Node(id="review", label="Iterative Review", type="stage"),
-            Node(id="revision", label="Revision", type="stage"),
-            Node(id="editorial", label="Editorial", type="stage"),
-            Node(id="final_manuscript", label="Final Manuscript", type="output")
-        ]
-        
-        # Add edges for workflow connections
-        edges = [
-            Edge(source="ideation", target="character", label="ideas"),
-            Edge(source="ideation", target="world_building", label="ideas"),
-            Edge(source="ideation", target="research", label="ideas"),
-            Edge(source="character", target="central_integration", label="characters"),
-            Edge(source="world_building", target="central_integration", label="world"),
-            Edge(source="research", target="central_integration", label="research"),
-            Edge(source="central_integration", target="outline", label="integrated_data"),
-            Edge(source="outline", target="writing", label="outline"),
-            Edge(source="writing", target="review", label="chapters"),
-            Edge(source="review", target="revision", label="feedback"),
-            Edge(source="revision", target="writing", label="revision_requests"),
-            Edge(source="revision", target="editorial", label="revised_chapters"),
-            Edge(source="editorial", target="final_manuscript", label="edited_manuscript")
-        ]
-        
-        # Create graph document and add to graph
-        graph_document = GraphDocument(nodes=nodes, edges=edges)
-        graph.add_graph_documents([graph_document])
-        
-        return graph
-    
-    def _get_target_word_count(self, target_length: str) -> int:
-        """Determine target word count based on selected format."""
-        word_count_map = {
-            "short_story": 7500,
-            "novella": 30000,
-            "novel": 80000,
-            "epic_novel": 120000
+    def _initialize_data(self):
+        """Initialize workflow data in memory."""
+        # Store initial configuration
+        initial_data = {
+            "title": self.title,
+            "genre": self.genre,
+            "target_length": self.target_length,
+            "complexity": self.complexity,
+            "initial_prompt": self.initial_prompt,
+            "creation_time": datetime.now().isoformat()
         }
-        return word_count_map.get(target_length, 80000)
+        
+        self.memory.add_document(
+            json.dumps(initial_data),
+            "workflow",
+            metadata={"type": "project_config"}
+        )
+        
+        # Store project status
+        status_data = {
+            "status": "not_started",
+            "progress": 0,
+            "current_stage": "not_started",
+            "completed_stages": [],
+            "start_time": None,
+            "last_update": datetime.now().isoformat()
+        }
+        
+        self.central_hub.update_project_status(status_data)
     
-    def start(self) -> None:
+    def start(self):
         """Start the manuscript generation workflow in a separate thread."""
         if self.is_running:
             logger.warning(f"Workflow for project {self.project_id} is already running")
             return
         
+        self.start_time = datetime.now().isoformat()
         self.is_running = True
-        self.start_time = datetime.now()
-        self.status = "running"
-        self.progress = 0
+        self.current_stage = "starting"
         
-        # Update project status
-        self._update_status()
+        # Update status
+        status_data = {
+            "status": "running",
+            "progress": 0,
+            "current_stage": self.current_stage,
+            "completed_stages": self.completed_stages,
+            "start_time": self.start_time,
+            "last_update": datetime.now().isoformat()
+        }
+        self.central_hub.update_project_status(status_data)
         
-        # Start the workflow in a separate thread
-        self.workflow_thread = threading.Thread(target=self._run_workflow)
-        self.workflow_thread.daemon = True
-        self.workflow_thread.start()
+        # Start the workflow in a new thread
+        self.thread = threading.Thread(target=self._run_workflow)
+        self.thread.daemon = True
+        self.thread.start()
         
         logger.info(f"Started workflow for project {self.project_id}")
     
-    def _run_workflow(self) -> None:
-        """Run the complete manuscript generation workflow."""
+    def _run_workflow(self):
+        """Run the manuscript generation workflow."""
         try:
-            # Phase 1: Parallel ideation, character, world-building, and research
-            self._execute_ideation_phase()
-            self._execute_development_phase()
-            
-            # Phase 2: Integration and outlining
-            self._execute_outline_phase()
-            
-            # Phase 3: Writing and iterative review
-            self._execute_writing_phase()
-            
-            # Phase 4: Final revisions and editorial
-            self._execute_editorial_phase()
-            
-            # Complete the workflow
-            self.is_complete = True
-            self.status = "completed"
-            self.progress = 100
-            self.end_time = datetime.now()
-            
-        except Exception as e:
-            logger.error(f"Workflow error for project {self.project_id}: {str(e)}")
-            self.status = "error"
-            self.errors.append(str(e))
-        
-        finally:
-            self.is_running = False
-            self._update_status()
-    
-    def _execute_ideation_phase(self) -> None:
-        """Execute the ideation phase of the workflow."""
-        self.current_stage = "ideation"
-        self._update_status()
-        
-        try:
-            # Generate initial ideas
-            ideation_agent = self.agents["ideation"]
-            ideas = ideation_agent.generate_ideas(
+            # STAGE 1: Ideation
+            self._update_stage("ideation")
+            ideation_result = self.agents["ideation"].generate_ideas(
                 title=self.title,
                 genre=self.genre,
-                initial_prompt=self.initial_prompt,
+                initial_prompt=self.initial_prompt
+            )
+            self._complete_stage("ideation")
+            
+            # STAGE 2: Research
+            self._update_stage("research")
+            ideation_data = self.central_hub.aggregate_ideation_data()
+            research_result = self.agents["research"].generate_research(
+                book_idea=ideation_data.get("selected_idea", {}),
+                num_topics=5,
                 complexity=self.complexity
             )
+            self._complete_stage("research")
             
-            # If title was not provided, use the title from the best idea
-            if not self.title and ideas and "ideas" in ideas and ideas["ideas"]:
-                best_idea = max(ideas["ideas"], key=lambda x: x.get("score", 0))
-                self.title = best_idea.get("title", "Untitled Book")
-                
-                # Update configuration
-                self.config["title"] = self.title
+            # STAGE 3: Character Development
+            self._update_stage("character_development")
+            ideation_data = self.central_hub.aggregate_ideation_data()
+            character_result = self.agents["character"].generate_characters(
+                idea=ideation_data.get("selected_idea", {}),
+                world_context={}  # Empty at this stage
+            )
+            self._complete_stage("character_development")
             
-            # Aggregate ideation data in the central hub
-            self.central_hub.aggregate_ideation_data()
-            
-            # Mark stage as completed
-            self.completed_stages.append("ideation")
-            self.progress = 10
-            
-        except Exception as e:
-            logger.error(f"Ideation phase error: {str(e)}")
-            self.errors.append(f"Ideation phase: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _execute_development_phase(self) -> None:
-        """Execute the parallel development phase (character, world, research)."""
-        # Get the selected book idea from the central hub
-        try:
-            ideation_data = self.central_hub.get_aggregated_data("ideation")
-            selected_idea = ideation_data.get("selected_idea", {})
-            
-            # Execute character development
-            self._execute_character_development(selected_idea)
-            
-            # Execute world building
-            self._execute_world_building(selected_idea)
-            
-            # Execute research
-            self._execute_research(selected_idea)
-            
-            # Integrate all data in the central hub
-            self.central_hub.integrate_all_data()
-            
-            self.progress = 30
-            self._update_status()
-            
-        except Exception as e:
-            logger.error(f"Development phase error: {str(e)}")
-            self.errors.append(f"Development phase: {str(e)}")
-            raise
-    
-    def _execute_character_development(self, book_idea: Dict[str, Any]) -> None:
-        """Execute the character development stage."""
-        self.current_stage = "character_development"
-        self._update_status()
-        
-        try:
-            # Generate characters
-            character_agent = self.agents["character"]
-            characters = character_agent.generate_characters(
-                book_idea=book_idea,
+            # STAGE 4: World Building
+            self._update_stage("world_building")
+            world_building_result = self.agents["world_building"].generate_world(
+                book_idea=ideation_data.get("selected_idea", {}),
                 complexity=self.complexity
             )
+            self._complete_stage("world_building")
             
-            # If enough characters were generated, create relationships
-            if "characters" in characters and len(characters["characters"]) >= 2:
-                character_ids = [char.get("id") for char in characters["characters"] if "id" in char]
-                character_agent.generate_character_relationships(character_ids)
-            
-            # Aggregate character data in the central hub
-            self.central_hub.aggregate_character_data()
-            
-            # Mark stage as completed
-            self.completed_stages.append("character_development")
-            
-        except Exception as e:
-            logger.error(f"Character development error: {str(e)}")
-            self.errors.append(f"Character development: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _execute_world_building(self, book_idea: Dict[str, Any]) -> None:
-        """Execute the world building stage."""
-        self.current_stage = "world_building"
-        self._update_status()
-        
-        try:
-            # Generate world
-            world_agent = self.agents["world_building"]
-            world = world_agent.generate_world(
-                book_idea=book_idea,
-                complexity=self.complexity
-            )
-            
-            # Develop a few key locations if they exist
-            if "locations" in world and isinstance(world["locations"], list) and len(world["locations"]) > 0:
-                # Select up to 2 locations to develop further
-                locations_to_develop = world["locations"][:min(2, len(world["locations"]))]
-                
-                for location in locations_to_develop:
-                    location_name = location.get("name", "")
-                    if location_name:
-                        world_agent.develop_location(
-                            location_name=location_name,
-                            development_prompt=f"Develop the location '{location_name}' in more detail, focusing on its significance to the story."
-                        )
-            
-            # Aggregate world data in the central hub
-            self.central_hub.aggregate_world_data()
-            
-            # Mark stage as completed
-            self.completed_stages.append("world_building")
-            
-        except Exception as e:
-            logger.error(f"World building error: {str(e)}")
-            self.errors.append(f"World building: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _execute_research(self, book_idea: Dict[str, Any]) -> None:
-        """Execute the research stage."""
-        self.current_stage = "research"
-        self._update_status()
-        
-        try:
-            # Get world data if available
-            world_data = None
-            try:
-                world_data = self.central_hub.get_aggregated_data("world")
-            except ValueError:
-                # World data might not be available yet, which is okay
-                pass
-            
-            # Generate research topics
-            research_agent = self.agents["research"]
-            research = research_agent.generate_research(
-                book_idea=book_idea,
+            # STAGE 5: Plot Development
+            self._update_stage("plot_development")
+            character_data = character_result
+            world_data = world_building_result
+            plot_result = self.agents["plot"].generate_plot(
+                book_idea=ideation_data.get("selected_idea", {}),
+                characters=character_data,
                 world_data=world_data,
                 complexity=self.complexity
             )
+            self._complete_stage("plot_development")
             
-            # Research a few high-priority topics in more detail
-            if "topics" in research and isinstance(research["topics"], list) and len(research["topics"]) > 0:
-                # Sort topics by priority and select top 2
-                topics_to_research = sorted(
-                    research["topics"], 
-                    key=lambda x: x.get("priority", 5), 
-                    reverse=True
-                )[:min(2, len(research["topics"]))]
-                
-                for topic in topics_to_research:
-                    topic_id = topic.get("id", "")
-                    if topic_id:
-                        research_agent.research_topic(topic_id=topic_id)
+            # Integrate all data so far
+            integrated_data = self.central_hub.integrate_all_data()
             
-            # Synthesize research
-            research_agent.synthesize_research()
+            # STAGE 6: Chapter Planning
+            self._update_stage("chapter_planning")
             
-            # Aggregate research data in the central hub
-            self.central_hub.aggregate_research_data()
-            
-            # Mark stage as completed
-            self.completed_stages.append("research")
-            
-        except Exception as e:
-            logger.error(f"Research error: {str(e)}")
-            self.errors.append(f"Research: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _execute_outline_phase(self) -> None:
-        """Execute the outline phase of the workflow."""
-        self.current_stage = "outlining"
-        self._update_status()
-        
-        try:
-            # Get integrated data from the central hub
-            integrated_data = self.central_hub.get_integrated_data()
-            
-            # Generate outline
-            outline_agent = self.agents["outline"]
-            outline = outline_agent.generate_outline(
-                book_idea=integrated_data["book_idea"],
-                characters=integrated_data["characters"],
-                world_data=integrated_data["world"],
-                research_data=integrated_data["research"],
-                complexity=self.complexity,
-                target_word_count=self.target_word_count
-            )
-            
-            # Enhance a few key chapters with more details
-            if "chapters" in outline and isinstance(outline["chapters"], list) and len(outline["chapters"]) > 0:
-                # Select a few chapters to enhance (first, middle, and climax chapters)
-                chapters_to_enhance = []
-                if len(outline["chapters"]) > 0:
-                    chapters_to_enhance.append(outline["chapters"][0])  # First chapter
-                
-                if len(outline["chapters"]) > 2:
-                    middle_idx = len(outline["chapters"]) // 2
-                    chapters_to_enhance.append(outline["chapters"][middle_idx])  # Middle chapter
-                
-                if len(outline["chapters"]) > 3:
-                    climax_idx = max(0, len(outline["chapters"]) - 3)  # Third from last (likely climax)
-                    chapters_to_enhance.append(outline["chapters"][climax_idx])
-                
-                for chapter in chapters_to_enhance:
-                    chapter_id = chapter.get("id", "")
-                    if chapter_id:
-                        outline_agent.add_chapter_details(
-                            chapter_id=chapter_id,
-                            detail_type="scenes",
-                            detail_instructions="Add detailed scene breakdowns including setting, characters, conflict, and resolution."
-                        )
-            
-            # Mark stage as completed
-            self.completed_stages.append("outlining")
-            self.progress = 40
-            
-        except Exception as e:
-            logger.error(f"Outline phase error: {str(e)}")
-            self.errors.append(f"Outline phase: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _execute_writing_phase(self) -> None:
-        """Execute the writing and review phase of the workflow."""
-        try:
-            # Get the outline
-            outline_agent = self.agents["outline"]
-            outline = outline_agent.get_complete_outline()
-            
-            # Get integrated data for reference
-            integrated_data = self.central_hub.get_integrated_data()
-            
-            # Generate style guide
-            writing_agent = self.agents["writing"]
-            style_guide = writing_agent.generate_style_guide(integrated_data["book_idea"])
-            
-            # Determine how many chapters to write
-            if "chapters" in outline and isinstance(outline["chapters"], list):
-                chapters_to_write = outline["chapters"]
-                
-                # Limit number of chapters for demo purposes if needed
-                if len(chapters_to_write) > 3 and self.target_length == "short_story":
-                    chapters_to_write = chapters_to_write[:3]
-                
-                # Write the chapters one by one with review and revision
-                for i, chapter_outline in enumerate(chapters_to_write):
-                    if i == 0:
-                        # First chapter - full process
-                        self._write_review_revise_chapter(
-                            chapter_outline=chapter_outline,
-                            outline=outline,
-                            integrated_data=integrated_data,
-                            style_guide=style_guide,
-                            previously_written_chapters=None
-                        )
-                    else:
-                        # Subsequent chapters - get previously written chapters
-                        previously_written = writing_agent.get_all_written_chapters()
-                        self._write_review_revise_chapter(
-                            chapter_outline=chapter_outline,
-                            outline=outline,
-                            integrated_data=integrated_data,
-                            style_guide=style_guide,
-                            previously_written_chapters=previously_written
-                        )
-                    
-                    # Update progress based on how many chapters we've written
-                    chapters_progress = min(90, 40 + (50 * (i + 1) // max(1, len(chapters_to_write))))
-                    self.progress = chapters_progress
-                    self._update_status()
-            
-            # Check for consistency across chapters
-            written_chapters = writing_agent.get_all_written_chapters()
-            if len(written_chapters) > 1:
-                review_agent = self.agents["review"]
-                consistency_analysis = review_agent.analyze_manuscript_consistency(written_chapters)
-                
-                # Revise chapters to address consistency issues
-                revision_agent = self.agents["revision"]
-                revision_agent.revise_consistency_issues(written_chapters, consistency_analysis)
-            
-            # Mark stage as completed
-            self.completed_stages.append("writing")
-            self.completed_stages.append("review")
-            self.completed_stages.append("revision")
-            self.progress = 90
-            
-        except Exception as e:
-            logger.error(f"Writing phase error: {str(e)}")
-            self.errors.append(f"Writing phase: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
-    
-    def _write_review_revise_chapter(
-        self,
-        chapter_outline: Dict[str, Any],
-        outline: Dict[str, Any],
-        integrated_data: Dict[str, Any],
-        style_guide: Dict[str, Any],
-        previously_written_chapters: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
-        """Write, review, and revise a single chapter."""
-        chapter_id = chapter_outline.get("id", "")
-        
-        try:
-            # Set current stage to writing
-            self.current_stage = "writing"
-            self._update_status()
-            
-            # Write the chapter
-            writing_agent = self.agents["writing"]
-            chapter = writing_agent.write_chapter(
-                chapter_data=chapter_outline,
-                characters=integrated_data["characters"],
-                world_data=integrated_data["world"],
-                previously_written_chapters=previously_written_chapters,
-                style_guide=style_guide
-            )
-            
-            # Set current stage to review
-            self.current_stage = "review"
-            self._update_status()
-            
-            # Review the chapter
-            review_agent = self.agents["review"]
-            review = review_agent.review_chapter(
-                chapter_data=chapter,
-                chapter_outline=chapter_outline,
-                style_guide=style_guide
-            )
-            
-            # Also do a readability analysis
-            readability = review_agent.analyze_chapter_readability(chapter)
-            
-            # Set current stage to revision
-            self.current_stage = "revision"
-            self._update_status()
-            
-            # Revise the chapter based on the review
-            revision_agent = self.agents["revision"]
-            revised_chapter = revision_agent.revise_chapter(
-                chapter_data=chapter,
-                review_data=review
-            )
-            
-            return revised_chapter
-            
-        except Exception as e:
-            logger.error(f"Error processing chapter {chapter_id}: {str(e)}")
-            self.errors.append(f"Chapter {chapter_id}: {str(e)}")
-            raise
-    
-    def _execute_editorial_phase(self) -> None:
-        """Execute the editorial phase of the workflow."""
-        self.current_stage = "editorial"
-        self._update_status()
-        
-        try:
-            # Get all revised chapters
-            revision_agent = self.agents["revision"]
-            revised_chapters = revision_agent.get_all_revised_chapters()
-            
-            # If no revised chapters available, get the written chapters
-            if not revised_chapters:
-                writing_agent = self.agents["writing"]
-                revised_chapters = writing_agent.get_all_written_chapters()
-            
-            # Get style guide if available
-            writing_agent = self.agents["writing"]
-            style_guide = writing_agent.get_style_guide()
-            
-            # Edit each chapter
-            editorial_agent = self.agents["editorial"]
-            edited_chapters = []
-            
-            for chapter in revised_chapters:
-                edited_chapter = editorial_agent.edit_chapter(
-                    chapter_data=chapter,
-                    style_guide=style_guide
-                )
-                edited_chapters.append(edited_chapter)
-            
-            # Get the outline for structure reference
-            outline_agent = self.agents["outline"]
-            outline = outline_agent.get_complete_outline()
-            
-            # Create front and back matter
-            book_info = {
-                "title": self.title,
-                "author": "AI Author",  # Placeholder
-                "genre": self.genre
+            # Assemble manuscript outline for chapter planning
+            manuscript_outline = {
+                "title": self.title or integrated_data.get("selected_idea", {}).get("title", "Untitled"),
+                "genre": self.genre,
+                "target_length": self.target_length,
+                "plot": plot_result,
+                "characters": character_data,
+                "world": world_data,
+                "idea": integrated_data.get("selected_idea", {})
             }
             
-            front_matter = editorial_agent.create_front_matter(book_info, outline)
+            chapter_plan = self.agents["chapter_planner"].plan_chapters(manuscript_outline)
+            self._complete_stage("chapter_planning")
             
-            # Get character and world data for back matter
-            integrated_data = self.central_hub.get_integrated_data()
+            # STAGE 7: Chapter Writing
+            total_chapters = len(chapter_plan)
+            previous_chapter_content = None
+            chapters = []
             
-            back_matter = editorial_agent.create_back_matter(
-                book_info,
-                characters=integrated_data["characters"],
-                world_data=integrated_data["world"]
-            )
+            for i, chapter in enumerate(chapter_plan):
+                chapter_number = chapter.get("number", i + 1)
+                self._update_stage(f"writing_chapter_{chapter_number}")
+                
+                try:
+                    logger.info(f"Writing chapter {chapter_number} of {total_chapters}")
+                    chapter_data = self.agents["chapter_writer"].write_chapter(
+                        chapter_plan=chapter,
+                        previous_chapter_content=previous_chapter_content
+                    )
+                    chapters.append(chapter_data)
+                    
+                    # Update for next chapter
+                    previous_chapter_content = chapter_data.get("content", "")
+                    
+                    self._complete_stage(f"writing_chapter_{chapter_number}")
+                    
+                    # Update progress based on chapters completed
+                    progress = int(80 + ((i + 1) / total_chapters) * 20)  # 80% base progress + up to 20% for chapters
+                    self._update_progress(progress)
+                    
+                except Exception as e:
+                    logger.error(f"Error writing chapter {chapter_number}: {str(e)}")
+                    self.errors.append({
+                        "stage": f"writing_chapter_{chapter_number}",
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    })
+                    # Continue with next chapter despite the error
             
-            # Assemble final manuscript
-            manuscript = editorial_agent.assemble_manuscript(
-                book_info=book_info,
-                chapters=edited_chapters,
-                front_matter=front_matter,
-                back_matter=back_matter
-            )
+            # STAGE 8: Final Manuscript Assembly
+            self._update_stage("manuscript_assembly")
+            manuscript_result = self.agents["manuscript"].assemble_manuscript(chapters=chapters)
+            self._complete_stage("manuscript_assembly")
             
-            # Mark stage as completed
-            self.completed_stages.append("editorial")
-            self.progress = 100
+            # Complete workflow
+            self._update_stage("completed")
+            self.is_complete = True
+            self.is_running = False
+            
+            # Update final status
+            status_data = {
+                "status": "complete",
+                "progress": 100,
+                "current_stage": self.current_stage,
+                "completed_stages": self.completed_stages,
+                "completion_time": datetime.now().isoformat(),
+                "word_count": manuscript_result.get("word_count", 0),
+                "chapter_count": len(chapters)
+            }
+            self.central_hub.update_project_status(status_data)
+            
+            logger.info(f"Completed workflow for project {self.project_id}")
             
         except Exception as e:
-            logger.error(f"Editorial phase error: {str(e)}")
-            self.errors.append(f"Editorial phase: {str(e)}")
-            raise
-        
-        finally:
-            self._update_status()
+            logger.error(f"Error in workflow: {str(e)}", exc_info=True)
+            self.errors.append({
+                "stage": self.current_stage,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            })
+            
+            # Update status to error
+            status_data = {
+                "status": "error",
+                "progress": self.get_progress(),
+                "current_stage": self.current_stage,
+                "completed_stages": self.completed_stages,
+                "error": str(e),
+                "error_time": datetime.now().isoformat()
+            }
+            self.central_hub.update_project_status(status_data)
+            
+            self.is_running = False
     
-    def _update_status(self) -> None:
-        """Update the project status in the central hub."""
-        status = {
-            "project_id": self.project_id,
-            "status": self.status,
-            "progress": self.progress,
-            "current_stage": self.current_stage,
-            "completed_stages": self.completed_stages,
-            "is_running": self.is_running,
-            "is_complete": self.is_complete,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "last_updated": datetime.now().isoformat(),
-            "errors": self.errors
+    def _update_stage(self, stage: str):
+        """Update the current stage."""
+        self.current_stage = stage
+        self.last_progress_time = datetime.now().isoformat()
+        
+        # Calculate progress based on stage
+        progress_map = {
+            "ideation": 5,
+            "research": 15,
+            "character_development": 25,
+            "world_building": 40,
+            "plot_development": 55,
+            "chapter_planning": 70,
+            # Chapter writing stages are calculated dynamically
+            "manuscript_assembly": 95,
+            "completed": 100
         }
         
-        self.central_hub.update_project_status(status)
+        # For chapter writing stages, interpolate between 70 and 95
+        if stage.startswith("writing_chapter_"):
+            try:
+                chapter_num = int(stage.split("_")[-1])
+                total_chapters = 0
+                # Try to get total chapters from chapter plan
+                try:
+                    chapter_docs = self.memory.query_memory("type:chapter_plan", agent_name="chapter_planner_agent")
+                    if chapter_docs:
+                        chapter_plan = json.loads(chapter_docs[0].get("text", "{}"))
+                        total_chapters = len(chapter_plan.get("chapters", []))
+                except:
+                    pass
+                
+                # Default to 10 if we can't determine
+                if total_chapters == 0:
+                    total_chapters = 10
+                
+                # Calculate progress (70% base + up to 25% for chapters)
+                chapter_progress = int(70 + ((chapter_num - 1) / total_chapters) * 25)
+                progress = min(95, chapter_progress)
+            except:
+                progress = 70
+        else:
+            progress = progress_map.get(stage, self.get_progress())
+        
+        self._update_progress(progress)
+        
+        logger.info(f"Project {self.project_id} moved to stage: {stage} (progress: {progress}%)")
+    
+    def _complete_stage(self, stage: str):
+        """Mark a stage as completed."""
+        if stage not in self.completed_stages:
+            self.completed_stages.append(stage)
+        
+        # Update status
+        status_data = {
+            "status": "running",
+            "progress": self.get_progress(),
+            "current_stage": self.current_stage,
+            "completed_stages": self.completed_stages,
+            "last_update": datetime.now().isoformat()
+        }
+        self.central_hub.update_project_status(status_data)
+        
+        logger.info(f"Project {self.project_id} completed stage: {stage}")
+    
+    def _update_progress(self, progress: int):
+        """Update the progress percentage."""
+        # Update status
+        status_data = {
+            "status": "running",
+            "progress": progress,
+            "current_stage": self.current_stage,
+            "completed_stages": self.completed_stages,
+            "last_update": datetime.now().isoformat()
+        }
+        self.central_hub.update_project_status(status_data)
+    
+    def get_progress(self) -> int:
+        """Get current progress percentage."""
+        status = self.central_hub.get_project_status()
+        return status.get("progress", 0)
+    
+    def thread_health(self) -> bool:
+        """Check if the workflow thread is still alive."""
+        if self.thread:
+            return self.thread.is_alive()
+        return False
     
     def get_status(self) -> Dict[str, Any]:
-        """Get the current workflow status."""
-        status = self.central_hub.get_project_status()
-        return status
-    
+        """Get the current status of the workflow."""
+        return self.central_hub.get_project_status()
+
     def get_final_manuscript(self) -> Optional[Dict[str, Any]]:
         """Get the final manuscript if available."""
         if not self.is_complete:
             return None
         
-        editorial_agent = self.agents["editorial"]
-        return editorial_agent.get_final_manuscript()
+        manuscripts = self.memory.query_memory("type:final_manuscript", agent_name="manuscript_agent")
+        if manuscripts and len(manuscripts) > 0:
+            try:
+                manuscript_data = json.loads(manuscripts[0]["text"])
+                return manuscript_data
+            except:
+                return None
+        return None
     
     def get_agent(self, agent_name: str) -> Any:
         """Get a specific agent by name."""
@@ -769,34 +546,237 @@ class ManuscriptWorkflow:
     
     def visualize_workflow(self) -> Dict[str, Any]:
         """Get a visualization of the workflow state."""
-        # Update node status based on completed stages
-        nodes = []
-        for node_id, node_data in self.graph.nodes.items():
-            node_status = "completed" if node_id in self.completed_stages else "pending"
-            
-            if node_id == self.current_stage:
-                node_status = "current"
-            
-            nodes.append({
-                "id": node_id,
-                "label": node_data.label,
-                "type": node_data.type,
-                "status": node_status
-            })
+        # Create a simplified workflow visualization
+        nodes = [
+            {"id": "ideation", "label": "Ideation", "status": "completed" if "ideation" in self.completed_stages else "pending"},
+            {"id": "research", "label": "Research", "status": "completed" if "research" in self.completed_stages else "pending"},
+            {"id": "character_development", "label": "Character Development", "status": "completed" if "character_development" in self.completed_stages else "pending"},
+            {"id": "world_building", "label": "World Building", "status": "completed" if "world_building" in self.completed_stages else "pending"},
+            {"id": "plot_development", "label": "Plot Development", "status": "completed" if "plot_development" in self.completed_stages else "pending"},
+            {"id": "chapter_planning", "label": "Chapter Planning", "status": "completed" if "chapter_planning" in self.completed_stages else "pending"},
+            {"id": "chapter_writing", "label": "Chapter Writing", "status": "completed" if any(s.startswith("writing_chapter_") for s in self.completed_stages) else "pending"},
+            {"id": "manuscript_assembly", "label": "Manuscript Assembly", "status": "completed" if "manuscript_assembly" in self.completed_stages else "pending"}
+        ]
         
-        # Get edges
-        edges = []
-        for edge in self.graph.edges:
-            edges.append({
-                "source": edge.source,
-                "target": edge.target,
-                "label": edge.label
-            })
+        # Mark current stage
+        for node in nodes:
+            if node["id"] == self.current_stage:
+                node["status"] = "current"
+        
+        # Define edges
+        edges = [
+            {"source": "ideation", "target": "research", "label": "Follows"},
+            {"source": "research", "target": "character_development", "label": "Follows"},
+            {"source": "character_development", "target": "world_building", "label": "Follows"},
+            {"source": "world_building", "target": "plot_development", "label": "Follows"},
+            {"source": "plot_development", "target": "chapter_planning", "label": "Follows"},
+            {"source": "chapter_planning", "target": "chapter_writing", "label": "Follows"},
+            {"source": "chapter_writing", "target": "manuscript_assembly", "label": "Follows"}
+        ]
         
         return {
             "nodes": nodes,
             "edges": edges,
-            "progress": self.progress,
+            "progress": self.get_progress(),
             "current_stage": self.current_stage,
             "completed_stages": self.completed_stages
         }
+
+    def get_stage_data(self, stage: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the data generated by a specific stage.
+        
+        Args:
+            stage: The stage name to get data for
+            
+        Returns:
+            Dictionary containing the stage data if available, None otherwise
+        """
+        if stage == "ideation":
+            data = self.memory.query_memory("type:selected_idea", agent_name="ideation_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        elif stage == "character":
+            data = self.memory.query_memory("type:characters", agent_name="character_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        elif stage == "world":
+            data = self.memory.query_memory("type:world", agent_name="world_building_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        elif stage == "research":
+            data = self.memory.query_memory("type:research", agent_name="research_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        elif stage == "plot":
+            data = self.memory.query_memory("type:plot", agent_name="plot_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        elif stage == "chapter_plan":
+            data = self.memory.query_memory("type:chapter_plan", agent_name="chapter_planner_agent")
+            if data:
+                try:
+                    return json.loads(data[0]["text"])
+                except:
+                    return None
+        return None
+
+    def _save_workflow_state(self):
+        """Save the current workflow state to memory."""
+        state = {
+            "current_stage": self.current_stage,
+            "completed_stages": self.completed_stages,
+            "is_running": self.is_running,
+            "is_complete": self.is_complete,
+            "errors": self.errors,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.memory.add_document(
+            json.dumps(state),
+            "workflow",
+            metadata={"type": "workflow_state"}
+        )
+        
+    def _run_agent(self, agent_key: str):
+        """Run a specific agent."""
+        try:
+            agent = self.agents.get(agent_key)
+            if not agent:
+                logger.error(f"Agent {agent_key} not found")
+                return
+                
+            self.current_stage = agent_key
+            self.current_agent = agent.name if hasattr(agent, 'name') else f"{agent_key}_agent"
+            self.agent_start_time = time.time()
+            
+            logger.info(f"Running agent: {agent_key}")
+            
+            # Different agents have different run methods, handle accordingly
+            if agent_key == "ideation":
+                agent.generate_ideas(self.initial_prompt)
+            elif agent_key == "character":
+                agent.generate_characters()
+            elif agent_key == "world":
+                agent.generate_world()
+            elif agent_key == "research":
+                agent.conduct_research()
+            elif agent_key == "outline":
+                agent.generate_outline()
+            elif agent_key == "plot":
+                agent.develop_plot()
+            elif agent_key == "chapter_planning":
+                agent.plan_chapters()
+            elif agent_key == "writing":
+                agent.write_manuscript()
+            elif agent_key == "review":
+                agent.review_manuscript()
+            elif agent_key == "revision":
+                agent.revise_manuscript()
+            elif agent_key == "editorial":
+                agent.editorial_polish()
+            elif agent_key == "manuscript":
+                agent.compile_manuscript()
+            else:
+                logger.warning(f"No handler defined for agent {agent_key}")
+                return
+                
+            # Update progress
+            self.last_progress_time = time.time()
+            self.completed_stages.append(agent_key)
+            self.current_stage = None
+            self.current_agent = None
+            
+            logger.info(f"Completed agent: {agent_key}")
+        except Exception as e:
+            logger.error(f"Error running agent {agent_key}: {str(e)}")
+            self.errors.append({
+                "stage": agent_key,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            })
+            raise
+
+    def execute(self, **config):
+        """Execute the workflow stages sequentially."""
+        # Initialize state
+        self.is_running = True
+        self.is_complete = False
+        self.current_stage = "start"
+        
+        # Set config
+        self.config = config
+        
+        try:
+            # Start workflow
+            logger.info(f"Starting manuscript workflow for project {self.project_id}")
+            self.current_stage = "ideation"
+            self._save_workflow_state()
+            
+            # Stage 1: Ideation - Generate book ideas
+            self._run_agent("ideation")
+            
+            # Stage 2: Research - Generate research topics
+            self.current_stage = "research"
+            self._save_workflow_state()
+            self._run_agent("research")
+            
+            # Stage 3: World Building - Generate world setting
+            self.current_stage = "world_building"
+            self._save_workflow_state()
+            self._run_agent("world")
+            
+            # Stage 4: Character - Generate characters
+            self.current_stage = "character"
+            self._save_workflow_state()
+            self._run_agent("character")
+            
+            # Stage 5: Plot Development
+            self.current_stage = "plot"
+            self._save_workflow_state()
+            self._run_agent("plot")
+            
+            # Stage 6: Chapter Planning
+            self.current_stage = "chapter_planning"
+            self._save_workflow_state()
+            self._run_agent("chapter_planning")
+            
+            # Stage 7: Chapter Writing
+            self.current_stage = "chapter_writing"
+            self._save_workflow_state()
+            self._run_agent("writing")
+            
+            # Stage 8: Manuscript Assembly
+            self.current_stage = "manuscript"
+            self._save_workflow_state()
+            self._run_agent("manuscript")
+            
+            # Workflow completed successfully
+            self.is_complete = True
+            self.end_time = datetime.now()
+            self.current_stage = "complete"
+            self._save_workflow_state()
+            
+            logger.info(f"Workflow completed successfully for project {self.project_id}")
+            return self.get_final_manuscript()
+            
+        except Exception as e:
+            self.is_running = False
+            self.error = str(e)
+            self._save_workflow_state()
+            logger.error(f"Workflow error in stage {self.current_stage}: {str(e)}")
+            raise

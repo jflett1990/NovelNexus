@@ -1,94 +1,205 @@
 import logging
 import json
+import re
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
-from models.ollama_client import get_ollama_client
+
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.character_schema import CHARACTER_SCHEMA
+from utils.json_utils import robust_json_parse, with_retries, verify_memory_write
 
 logger = logging.getLogger(__name__)
 
-class CharacterAgent:
+# Regular expressions for robust JSON extraction
+JSON_PATTERN = r'(\{[\s\S]*\})' 
+JSON_ARRAY_PATTERN = r'(\[[\s\S]*\])'
+
+def sanitize_json(json_str: str) -> str:
     """
-    Agent responsible for generating and developing characters for the book.
+    RESPOND ONLY WITH A VALID JSON ARRAY of character objects with this exact schema:
     """
+    # This is a placeholder docstring to fix the syntax error.
+    pass
+
+characters = []
+
+try:
+    # Try OpenAI first if enabled
+    if hasattr(self, 'use_openai') and self.use_openai and hasattr(self, 'openai_client') and self.openai_client:
+        try:
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+                temperature=0.8,
+                max_tokens=3000
+            )
+                    
+                    parsed_characters = response.get("parsed_json", [])
+                    if isinstance(parsed_characters, list) and len(parsed_characters) > 0:
+                        characters = parsed_characters
+                        logger.info(f"Generated {len(characters)} characters using OpenAI")
+                    else:
+                        raise ValueError("Invalid character data returned from OpenAI")
+                        
+                except Exception as e:
+                    logger.warning(f"OpenAI character generation failed: {str(e)}")
+            
+            # If OpenAI failed or we don't have characters, create fallback characters
+            if not characters:
+                logger.warning(f"Using fallback character generation for project {self.project_id}")
+                characters = self._create_fallback_characters(num_characters, idea, world_context)
+            
+            # Store each character in memory with verification
+            successful_chars = []
+            for char in characters:
+                char_name = char.get("name", "Unnamed")
+                
+                # Verify storage success
+                success = verify_memory_write(
+                    self.memory,
+                    json.dumps(char),
+                    self.name,
+                    metadata={"type": "character", "name": char_name}
+                )
+                
+                if success:
+                    successful_chars.append(char)
+                    logger.debug(f"Successfully stored character '{char_name}' in memory")
+                else:
+                    logger.warning(f"Failed to store character '{char_name}' in memory")
+            
+            # Log overall results
+            logger.info(f"Successfully stored {len(successful_chars)} characters in memory")
+            
+            # Generate relationships if we have at least 2 characters
+            if len(successful_chars) >= 2:
+                try:
+                    self._generate_character_relationships(successful_chars)
+                except Exception as e:
+                    logger.error(f"Error generating character relationships: {str(e)}")
+            
+            return successful_chars
+            
+        except Exception as e:
+            logger.error(f"Error in character generation: {str(e)}")
+            # Create fallback characters as a last resort
+            fallback_chars = self._create_fallback_characters(num_characters, idea, world_context)
+            
+            # Try to store them
+            for char in fallback_chars:
+                try:
+                    self.memory.add_document(
+                        json.dumps(char),
+                        self.name,
+                        metadata={"type": "character", "name": char.get("name", "Unnamed")}
+                    )
+                except Exception:
+                    pass  # Just continue if storage fails
+                    
+            return fallback_chars
     
-    def __init__(
-        self,
-        project_id: str,
-        memory: DynamicMemory,
-        use_openai: bool = True,
-        use_ollama: bool = True
-    ):
-        """
-        Initialize the Character Agent.
+    def _create_fallback_characters(self, num_chars: int, idea: Dict[str, Any], world: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Create minimal fallback characters when generation fails.
         
         Args:
-            project_id: Unique identifier for the project
-            memory: Dynamic memory instance
-            use_openai: Whether to use OpenAI models
-            use_ollama: Whether to use Ollama models
-        """
-        self.project_id = project_id
-        self.memory = memory
-        self.use_openai = use_openai
-        self.use_ollama = use_ollama
-        
-        self.ollama_client = get_ollama_client() if use_ollama else None
-        self.openai_client = get_openai_client() if use_openai else None
-        
-        self.name = "character_agent"
-        self.stage = "character_development"
-    
-    def generate_characters(
-        self,
-        book_idea: Dict[str, Any],
-        num_characters: int = 5,
-        complexity: str = "medium"
-    ) -> Dict[str, Any]:
-        """
-        Generate characters for the book based on the book idea.
-        
-        Args:
-            book_idea: Dictionary containing the book idea
-            num_characters: Number of characters to generate
-            complexity: Complexity level (low, medium, high)
+            num_chars: Number of characters to create
+            idea: Book idea for context
+            world: World context
             
         Returns:
-            Dictionary with generated characters
+            List of minimal valid character data
         """
-        logger.info(f"Generating {num_characters} characters for project {self.project_id}")
+        genre = idea.get("genre", "fiction")
         
-        # Extract key information from book idea
-        title = book_idea.get("title", "")
-        genre = book_idea.get("genre", "")
-        themes = book_idea.get("themes", [])
-        themes_str = ", ".join(themes) if isinstance(themes, list) else themes
-        plot_summary = book_idea.get("plot_summary", "")
+        fallback_roles = [
+            "Protagonist",
+            "Antagonist", 
+            "Supporting Character",
+            "Mentor",
+            "Ally"
+        ]
+        
+        characters = []
+        for i in range(min(num_chars, len(fallback_roles))):
+            char = {
+                "name": f"Character {i+1}",
+                "role": fallback_roles[i],
+                "personality": "Complex personality appropriate for their role in the story",
+                "background": "Background appropriate for the genre and setting", 
+                "goals": f"Goals aligned with their role as {fallback_roles[i]}",
+                "conflicts": "Internal and external conflicts driving character development",
+                "arc": "Character growth throughout the story",
+                "relationships": [],
+                "physical_description": f"Appearance appropriate for a {genre} {fallback_roles[i].lower()}"
+            }
+            characters.append(char)
+            
+        return characters
+    
+    def _generate_character_relationships(self, characters: List[Dict[str, Any]]) -> None:
+        """
+        Generate relationships between characters.
+        
+        Args:
+            characters: List of character dictionaries
+        """
+        if not characters or len(characters) < 2:
+            logger.warning("Cannot generate relationships: No valid characters found in memory")
+            return
+        
+        # Extract character names and roles for the prompt
+        char_info = []
+        for char in characters:
+            name = char.get("name", "")
+            role = char.get("role", "")
+            if name:
+                char_info.append(f"{name} ({role})")
         
         # Build the system prompt
-        system_prompt = """You are an expert character developer for novels and stories. 
-Your task is to create compelling, multi-dimensional characters with distinct personalities, backgrounds, motivations, and arcs.
-Each character should be unique and well-suited to the story concept.
-Provide output in JSON format according to the provided schema."""
+        system_prompt = """You are an expert in character relationships for stories.
+Your task is to create realistic, interesting relationships between characters.
+These relationships should create narrative tension, emotional depth, and story opportunities.
+
+IMPORTANT: Your output MUST be valid JSON following the exact schema specified.
+Do not include any text or markdown outside the JSON array."""
         
         # Build the user prompt
-        user_prompt = f"""Create {num_characters} compelling characters for a book with the following details:
+        char_list = "\n".join([f"- {info}" for info in char_info])
+        user_prompt = f"""Create relationships between the following characters in a {characters[0].get('genre', '')} story:
 
-Title: {title}
-Genre: {genre}
-Themes: {themes_str}
-Plot Summary: {plot_summary}
+{char_list}
 
-The characters should have {complexity} complexity level of development.
-Include a mix of protagonist(s), antagonist(s), and supporting characters.
-Each character should have distinct traits, backgrounds, motivations, and arcs that fit the story.
+For each pair of characters that have a significant relationship, define:
+1. The nature of their relationship 
+2. The history between them
+3. The current dynamics and tensions
+4. How their relationship affects the story
 
-Respond with characters formatted according to this JSON schema: {json.dumps(CHARACTER_SCHEMA)}
-"""
+RESPOND ONLY WITH A VALID JSON ARRAY of relationship objects with this exact schema:
+[
+  {{
+    "character1": "Name of first character",
+    "character2": "Name of second character",
+    "relationship_type": "Description of relationship (allies, rivals, family, etc.)",
+    "dynamics": "Description of the relationship dynamics",
+    "history": "Brief history between the characters",
+    "story_impact": "How this relationship affects the story"
+  }}
+]
+
+Important reminders:
+1. All keys must be in quotes
+2. No trailing commas in arrays or objects
+3. Use double quotes for strings, not single quotes
+4. Output must be a JSON array of relationship objects
+5. Do not include any explanatory text outside the JSON"""
         
         try:
+            relationships = []
+            
             # Try OpenAI first if enabled
             if self.use_openai and self.openai_client:
                 try:
@@ -96,102 +207,389 @@ Respond with characters formatted according to this JSON schema: {json.dumps(CHA
                         prompt=user_prompt,
                         system_prompt=system_prompt,
                         json_mode=True,
-                        temperature=0.8,
+                        temperature=0.7,
                         max_tokens=3000
                     )
                     
-                    characters = response["parsed_json"]
-                    logger.info(f"Generated {len(characters.get('characters', []))} characters using OpenAI")
-                    
-                    # Store in memory
-                    self._store_in_memory(characters)
-                    
-                    return characters
+                    parsed_rels = response.get("parsed_json", [])
+                    if isinstance(parsed_rels, list) and len(parsed_rels) > 0:
+                        relationships = parsed_rels
+                        logger.info(f"Generated {len(relationships)} character relationships using OpenAI")
+                    else:
+                        raise ValueError("Invalid relationship data returned from OpenAI")
+                        
                 except Exception as e:
-                    logger.warning(f"OpenAI character generation failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI relationship generation failed: {str(e)}, falling back to Ollama")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
+            # Use Ollama if OpenAI failed or is not enabled
+            if not relationships and self.use_ollama and self.ollama_client:
+                # Define function to use with retries
+                def generate_with_ollama():
+                    response = self.ollama_client.generate(
+                        prompt=user_prompt,
+                        system=system_prompt,
+                        format="json",
+                        temperature=0.8
+                    )
+                    
+                    # Parse JSON from response using robust parser
+                    text_response = response.get("response", "[]")
+                    logger.debug(f"Raw Ollama response for relationship generation (first 300 chars): {text_response[:300]}...")
+                    
+                    # Use the robust parser to extract relationship data
+                    parsed_data = robust_json_parse(text_response)
+                    
+                    # Handle different return formats
+                    if isinstance(parsed_data, dict) and "relationships" in parsed_data and isinstance(parsed_data["relationships"], list):
+                        return parsed_data["relationships"]
+                        
+                    if isinstance(parsed_data, dict) and "items" in parsed_data and isinstance(parsed_data["items"], list):
+                        return parsed_data["items"]
+                    
+                    # If we have a list directly
+                    if isinstance(parsed_data, list):
+                        return parsed_data
+                        
+                    # If we have a dict but expected a list, check if it's a single relationship
+                    if isinstance(parsed_data, dict) and "character1" in parsed_data and "character2" in parsed_data:
+                        return [parsed_data]
+                    
+                    # Last resort: return empty list
+                    return []
+                
+                try:
+                    # Try with retries
+                    relationships = with_retries(generate_with_ollama, retries=3)
+                    logger.info(f"Generated {len(relationships)} character relationships using Ollama")
+                    
+                    # Validate each relationship has required fields
+                    valid_rels = []
+                    for rel in relationships:
+                        if not isinstance(rel, dict):
+                            continue
+                            
+                        if "character1" not in rel or "character2" not in rel:
+                            continue
+                            
+                        if "relationship_type" not in rel:
+                            rel["relationship_type"] = "Connection"
+                            
+                        valid_rels.append(rel)
+                    
+                    relationships = valid_rels
+                    logger.info(f"Validated {len(relationships)} relationship objects")
+                    
+                except Exception as e:
+                    logger.error(f"Ollama relationship generation failed after retries: {str(e)}")
+                    # Create minimal fallback relationships
+                    if len(characters) >= 2:
+                        relationships = [
+                            {
+                                "character1": characters[0].get("name"),
+                                "character2": characters[1].get("name"),
+                                "relationship_type": "Central Relationship",
+                                "dynamics": "Complex dynamics central to the story",
+                                "history": "Shared history relevant to the plot",
+                                "story_impact": "Drives the core narrative conflict"
+                            }
+                        ]
+            
+            # Store relationships in memory
+            if relationships:
+                rel_metadata = {
+                    "type": "character_relationships",
+                    "timestamp": str(datetime.now()),
+                    "count": len(relationships)
+                }
+                
+                # Verify memory write
+                success = verify_memory_write(
+                    self.memory, 
+                    json.dumps(relationships), 
+                    self.name, 
+                    metadata=rel_metadata
                 )
                 
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    characters = json.loads(json_str)
+                if not success:
+                    logger.error(f"Failed to store character relationships in memory")
                 else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
+                    logger.info(f"Successfully stored {len(relationships)} character relationships in memory")
                 
-                logger.info(f"Generated {len(characters.get('characters', []))} characters using Ollama")
+                # Also update each character with their relationships
+                self._update_character_relationships(characters, relationships)
                 
-                # Store in memory
-                self._store_in_memory(characters)
-                
-                return characters
+        except Exception as e:
+            logger.error(f"Error generating character relationships: {str(e)}")
+    
+    def _update_character_relationships(self, characters: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> None:
+        """
+        Update each character with their relationships.
+        
+        Args:
+            characters: List of character dictionaries
+            relationships: List of relationship dictionaries
+        """
+        # Build a map of character names to their indices
+        char_map = {char.get("name"): i for i, char in enumerate(characters) if "name" in char}
+        
+        # For each relationship, update both characters
+        for rel in relationships:
+            char1 = rel.get("character1")
+            char2 = rel.get("character2")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to generate characters")
+            if not char1 or not char2 or char1 not in char_map or char2 not in char_map:
+                continue
+                
+            rel_type = rel.get("relationship_type", "Connection")
+            rel_dynamics = rel.get("dynamics", "")
+            
+            # Update character1's relationships
+            if "relationships" not in characters[char_map[char1]]:
+                characters[char_map[char1]]["relationships"] = []
+                
+            characters[char_map[char1]]["relationships"].append({
+                "with": char2,
+                "type": rel_type,
+                "dynamics": rel_dynamics
+            })
+            
+            # Update character2's relationships
+            if "relationships" not in characters[char_map[char2]]:
+                characters[char_map[char2]]["relationships"] = []
+                
+            characters[char_map[char2]]["relationships"].append({
+                "with": char1,
+                "type": rel_type,
+                "dynamics": rel_dynamics
+            })
+            
+        # Update the characters in memory
+        for char in characters:
+            char_name = char.get("name")
+            if not char_name:
+                continue
+                
+            # Try to update with verification
+            success = verify_memory_write(
+                self.memory,
+                json.dumps(char),
+                self.name,
+                metadata={"type": "character", "name": char_name}
+            )
+            
+            if not success:
+                logger.warning(f"Failed to update character '{char_name}' with relationship data")
+    
+    def get_characters(self) -> List[Dict[str, Any]]:
+        """
+        Get all characters from memory with improved error handling.
+        
+        Returns:
+            List of character dictionaries
+        """
+        try:
+            # Query for all character documents
+            docs = self.memory.get_agent_memory(self.name)
+            
+            if not docs:
+                logger.warning(f"No character data found in memory for project {self.project_id}")
+                return []
+            
+            characters = []
+            for doc in docs:
+                metadata = doc.get('metadata', {})
+                if metadata.get('type') != 'character':
+                    continue
+                    
+                try:
+                    # Use robust parsing
+                    char_data = robust_json_parse(doc['text'])
+                    if char_data and isinstance(char_data, dict) and "name" in char_data:
+                        characters.append(char_data)
+                except Exception as e:
+                    logger.warning(f"Error parsing character document: {str(e)}")
+            
+            if not characters:
+                logger.warning(f"No valid character data found in memory for project {self.project_id}")
+            else:
+                logger.info(f"Retrieved {len(characters)} characters from memory")
+                
+            return characters
             
         except Exception as e:
-            logger.error(f"Character generation error: {e}")
-            raise Exception(f"Failed to generate characters: {e}")
+            logger.error(f"Error retrieving characters from memory: {str(e)}")
+            return []
     
+    def get_character_relationships(self) -> List[Dict[str, Any]]:
+        """
+        Get all character relationships from memory with improved error handling.
+        
+        Returns:
+            List of relationship dictionaries
+        """
+        try:
+            # Query for relationship documents
+            docs = self.memory.query_memory("type:character_relationships", agent_name=self.name)
+            
+            if not docs:
+                # If no explicit relationship documents, try to extract from character data
+                characters = self.get_characters()
+                relationships = self._extract_relationships_from_characters(characters)
+                if relationships:
+                    logger.info(f"Extracted {len(relationships)} implied relationships from character data")
+                    return relationships
+                    
+                logger.warning(f"No relationship data found in memory for project {self.project_id}")
+                return []
+            
+            for doc in docs:
+                try:
+                    # Use robust parsing
+                    rel_data = robust_json_parse(doc['text'])
+                    if isinstance(rel_data, list) and rel_data:
+                        logger.info(f"Retrieved {len(rel_data)} character relationships from memory")
+                        return rel_data
+                    elif isinstance(rel_data, dict) and "relationships" in rel_data:
+                        rels = rel_data["relationships"]
+                        if isinstance(rels, list):
+                            logger.info(f"Retrieved {len(rels)} character relationships from memory")
+                            return rels
+                except Exception as e:
+                    logger.warning(f"Error parsing relationship document: {str(e)}")
+            
+            logger.warning("No valid relationship data found in memory")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error retrieving character relationships from memory: {str(e)}")
+            return []
+    
+    def _extract_relationships_from_characters(self, characters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract relationships from character data if explicit relationship documents don't exist.
+        
+        Args:
+            characters: List of character dictionaries
+            
+        Returns:
+            List of relationship dictionaries
+        """
+        extracted_rels = []
+        processed_pairs = set()
+        
+        for char in characters:
+            char_name = char.get("name")
+            if not char_name or "relationships" not in char:
+                continue
+                
+            for rel in char.get("relationships", []):
+                other_name = rel.get("with")
+                if not other_name:
+                    continue
+                    
+                # Create a unique identifier for this relationship pair (sorted to avoid duplicates)
+                pair = tuple(sorted([char_name, other_name]))
+                if pair in processed_pairs:
+                    continue
+                    
+                processed_pairs.add(pair)
+                
+                # Create a relationship object
+                rel_obj = {
+                    "character1": char_name,
+                    "character2": other_name,
+                    "relationship_type": rel.get("type", "Connection"),
+                    "dynamics": rel.get("dynamics", "Complex relationship"),
+                    "history": rel.get("history", "Shared history relevant to the story"),
+                    "story_impact": rel.get("story_impact", "Impacts the narrative in meaningful ways")
+                }
+                
+                extracted_rels.append(rel_obj)
+                
+        return extracted_rels
+        
     def develop_character(
         self,
-        character_id: str,
+        character_name: str,
         development_prompt: str
     ) -> Dict[str, Any]:
         """
         Develop a specific character with more details.
         
         Args:
-            character_id: ID of the character to develop
+            character_name: Name of the character to develop
             development_prompt: Specific directions for character development
             
         Returns:
-            Dictionary with developed character
+            Dictionary with the developed character
         """
         # Retrieve the original character from memory
-        original_characters = self.memory.query_memory(f"character_id:{character_id}", agent_name=self.name)
+        character_docs = self.memory.query_memory(f"name:{character_name} type:character", agent_name=self.name)
         
-        if not original_characters:
-            raise ValueError(f"Character with ID {character_id} not found in memory")
+        original_character = None
+        if character_docs:
+            try:
+                char_data = robust_json_parse(character_docs[0]['text'])
+                if char_data and "name" in char_data:
+                    original_character = char_data
+            except Exception as e:
+                logger.warning(f"Error parsing existing character data: {str(e)}")
         
-        original_character_doc = original_characters[0]
-        original_character_text = original_character_doc['text']
+        if not original_character:
+            logger.warning(f"Character {character_name} not found, creating new character")
+            original_character = {
+                "name": character_name,
+                "role": "To be determined",
+                "personality": "",
+                "background": "",
+                "goals": "",
+                "conflicts": "",
+                "arc": ""
+            }
         
-        try:
-            original_character = json.loads(original_character_text)
-        except json.JSONDecodeError:
-            raise ValueError(f"Invalid character data for ID {character_id}")
+        # Retrieve world context for better character development
+        world_context = self._get_world_context()
         
         # Build the system prompt
-        system_prompt = """You are an expert character developer for novels and stories. 
-Your task is to add depth and detail to an existing character based on specific development directions.
-Enhance the character while maintaining consistency with their core traits.
-Provide output in JSON format according to the provided schema."""
+        system_prompt = """You are an expert character developer for novels and stories.
+Your task is to create a richly detailed, complex character that fits the story's genre, themes, and world.
+The character should have distinct personality traits, a detailed background, clear motivations, and a well-defined role in the story.
+
+IMPORTANT: Your response MUST be valid JSON following the provided schema exactly.
+Do not add any text, explanations, or markdown outside the JSON structure."""
         
         # Build the user prompt
-        user_prompt = f"""Develop the following character with more depth and detail based on these directions: {development_prompt}
+        user_prompt = f"""Develop the character "{character_name}" with rich detail based on these directions:
+{development_prompt}
 
-Original character:
-{original_character_text}
+Current character information:
+{json.dumps(original_character, indent=2)}
 
-Enhance this character by adding more details to their background, personality, motivations, relationships, and arc.
-Maintain consistency with their core identity while adding complexity and nuance.
+World context:
+{json.dumps(world_context, indent=2)}
 
-Respond with the developed character formatted according to this JSON schema: {json.dumps(CHARACTER_SCHEMA['properties']['characters']['items'])}
-"""
+Enhance this character by developing:
+1. Detailed personality traits and mannerisms
+2. Rich background and personal history
+3. Complex motivations and goals
+4. Internal and external conflicts
+5. Character growth arc throughout the story
+6. Physical appearance and distinctive features
+7. Relationships with other characters (if known)
+8. Unique skills, knowledge, or abilities
+
+RESPOND ONLY WITH A VALID JSON OBJECT following this schema:
+{json.dumps(CHARACTER_SCHEMA, indent=2)}
+
+Important reminders:
+1. All keys must be in quotes
+2. No trailing commas in arrays or objects
+3. Use double quotes for strings, not single quotes
+4. Do not include any explanatory text outside the JSON"""
         
         try:
+            developed_character = None
+            
             # Try OpenAI first if enabled
             if self.use_openai and self.openai_client:
                 try:
@@ -200,263 +598,115 @@ Respond with the developed character formatted according to this JSON schema: {j
                         system_prompt=system_prompt,
                         json_mode=True,
                         temperature=0.7,
-                        max_tokens=2500
+                        max_tokens=2000
                     )
                     
-                    developed_character = response["parsed_json"]
-                    logger.info(f"Developed character {character_id} using OpenAI")
-                    
-                    # Update the character ID if it changed
-                    if "id" in developed_character and developed_character["id"] != character_id:
-                        developed_character["id"] = character_id
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(developed_character),
-                        self.name,
-                        metadata={"type": "developed_character", "character_id": character_id}
-                    )
-                    
-                    return developed_character
+                    developed_character = response.get("parsed_json")
+                    if developed_character and "name" in developed_character:
+                        logger.info(f"Developed character '{character_name}' using OpenAI")
+                    else:
+                        raise ValueError("Invalid character data returned from OpenAI")
+                        
                 except Exception as e:
-                    logger.warning(f"OpenAI character development failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI character development failed: {str(e)}, falling back to Ollama")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    developed_character = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Developed character {character_id} using Ollama")
-                
-                # Update the character ID if it changed
-                if "id" in developed_character and developed_character["id"] != character_id:
-                    developed_character["id"] = character_id
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(developed_character),
-                    self.name,
-                    metadata={"type": "developed_character", "character_id": character_id}
-                )
-                
-                return developed_character
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to develop character")
-            
-        except Exception as e:
-            logger.error(f"Character development error: {e}")
-            raise Exception(f"Failed to develop character: {e}")
-    
-    def generate_character_relationships(
-        self,
-        character_ids: List[str]
-    ) -> Dict[str, Any]:
-        """
-        Generate relationships between characters.
-        
-        Args:
-            character_ids: List of character IDs to establish relationships
-            
-        Returns:
-            Dictionary with character relationships
-        """
-        # Retrieve all specified characters from memory
-        characters = []
-        for character_id in character_ids:
-            character_docs = self.memory.query_memory(f"character_id:{character_id}", agent_name=self.name)
-            if character_docs:
-                try:
-                    character = json.loads(character_docs[0]['text'])
-                    characters.append(character)
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid character data for ID {character_id}")
-        
-        if not characters:
-            raise ValueError("No valid characters found in memory")
-        
-        # Build the system prompt
-        system_prompt = """You are an expert in developing complex character relationships for novels and stories. 
-Your task is to create meaningful, nuanced relationships between a set of characters.
-These relationships should create narrative tension and opportunities for character development.
-Provide output in JSON format."""
-        
-        # Build the user prompt
-        character_summaries = "\n\n".join([
-            f"Character: {char.get('name', 'Unknown')}\n"
-            f"Role: {char.get('role', 'Unknown')}\n"
-            f"Brief Description: {char.get('brief_description', 'Unknown')}"
-            for char in characters
-        ])
-        
-        user_prompt = f"""Develop meaningful relationships between the following characters:
-
-{character_summaries}
-
-For each relationship, specify:
-1. The characters involved (by ID)
-2. The type of relationship (family, friends, rivals, enemies, romantic, professional, etc.)
-3. The history of their relationship
-4. The current state of their relationship
-5. Potential areas of conflict or development in their relationship
-
-Respond with a JSON object in this format:
-{{
-  "relationships": [
-    {{
-      "character1_id": "char_001",
-      "character2_id": "char_002",
-      "relationship_type": "string",
-      "history": "string",
-      "current_state": "string",
-      "tension_points": ["string"],
-      "development_opportunities": ["string"]
-    }}
-  ]
-}}
-"""
-        
-        try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
+            # Try Ollama if OpenAI failed or is not enabled
+            if not developed_character and self.use_ollama and self.ollama_client:
+                # Define function to use with retries
+                def develop_with_ollama():
+                    response = self.ollama_client.generate(
                         prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=2500
+                        system=system_prompt,
+                        format="json",
+                        temperature=0.7
                     )
                     
-                    relationships = response["parsed_json"]
-                    logger.info(f"Generated relationships for {len(character_ids)} characters using OpenAI")
+                    # Extract and parse JSON from response
+                    text_response = response.get("response", "{}")
+                    logger.debug(f"Raw Ollama response for character development (first 300 chars): {text_response[:300]}...")
                     
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(relationships),
-                        self.name,
-                        metadata={"type": "character_relationships"}
-                    )
+                    # Use robust JSON parsing
+                    char_data = robust_json_parse(text_response)
                     
-                    return relationships
+                    if not char_data:
+                        logger.warning("Could not parse valid JSON from Ollama response")
+                        raise ValueError("Invalid character data from Ollama")
+                    
+                    # Ensure we have the minimum required fields
+                    if "name" not in char_data:
+                        char_data["name"] = character_name
+                    
+                    required_fields = ["role", "personality", "background", "goals", "conflicts", "arc"]
+                    for field in required_fields:
+                        if field not in char_data:
+                            char_data[field] = original_character.get(field, "")
+                    
+                    return char_data
+                
+                try:
+                    # Try with retries
+                    developed_character = with_retries(develop_with_ollama, retries=3)
+                    logger.info(f"Developed character '{character_name}' using Ollama")
+                    
                 except Exception as e:
-                    logger.warning(f"OpenAI relationship generation failed: {e}, falling back to Ollama")
+                    logger.error(f"Ollama character development failed after retries: {str(e)}")
+                    # Fall back to the original character with minimal enhancements
+                    developed_character = original_character.copy()
+                    developed_character["personality"] = developed_character.get("personality", "") + " Enhanced with additional depth."
+                    developed_character["background"] = developed_character.get("background", "") + " Background expanded with new details."
+                    logger.warning(f"Using minimally enhanced original character as fallback")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    relationships = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Generated relationships for {len(character_ids)} characters using Ollama")
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(relationships),
-                    self.name,
-                    metadata={"type": "character_relationships"}
-                )
-                
-                return relationships
+            # Final check if we have a character
+            if not developed_character:
+                developed_character = original_character.copy()
+                logger.warning(f"No AI service was able to develop character, using original")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to generate character relationships")
-            
-        except Exception as e:
-            logger.error(f"Character relationship generation error: {e}")
-            raise Exception(f"Failed to generate character relationships: {e}")
-    
-    def _store_in_memory(self, characters: Dict[str, Any]) -> None:
-        """
-        Store generated characters in memory.
-        
-        Args:
-            characters: Dictionary with generated characters
-        """
-        if "characters" not in characters or not isinstance(characters["characters"], list):
-            logger.warning("Invalid characters format for memory storage")
-            return
-        
-        # Store the entire characters dict
-        self.memory.add_document(
-            json.dumps(characters),
-            self.name,
-            metadata={"type": "character_results"}
-        )
-        
-        # Store each individual character for easier retrieval
-        for character in characters["characters"]:
-            character_id = character.get("id")
-            if not character_id:
-                continue
-                
-            self.memory.add_document(
-                json.dumps(character),
+            # Verify memory storage
+            success = verify_memory_write(
+                self.memory,
+                json.dumps(developed_character),
                 self.name,
-                metadata={"type": "character", "character_id": character_id}
+                metadata={"type": "character", "name": character_name}
             )
+            
+            if not success:
+                logger.error(f"Failed to store developed character '{character_name}' in memory")
+            else:
+                logger.info(f"Successfully stored developed character '{character_name}' in memory")
+            
+            return developed_character
+            
+        except Exception as e:
+            logger.error(f"Character development error: {str(e)}")
+            return original_character
     
-    def get_all_characters(self) -> List[Dict[str, Any]]:
+    def _get_world_context(self) -> Dict[str, Any]:
         """
-        Get all characters from memory.
+        Get world context from memory with error handling.
         
         Returns:
-            List of character dictionaries
+            Dictionary with world context
         """
-        # Query for all characters in memory
-        character_docs = self.memory.get_agent_memory(self.name)
-        
-        if not character_docs:
-            raise ValueError("No characters found in memory")
-        
-        # Filter for individual characters (not sets)
-        individual_characters = []
-        
-        for doc in character_docs:
-            metadata = doc.get('metadata', {})
-            if metadata.get('type') in ['character', 'developed_character']:
-                try:
-                    character = json.loads(doc['text'])
-                    individual_characters.append(character)
-                except json.JSONDecodeError:
-                    continue
-        
-        # Deduplicate characters by ID
-        # If there are multiple versions of a character, keep the developed version
-        character_map = {}
-        for character in individual_characters:
-            character_id = character.get('id')
-            if character_id:
-                if character_id not in character_map or metadata.get('type') == 'developed_character':
-                    character_map[character_id] = character
-        
-        return list(character_map.values())
+        try:
+            # Query for world documents
+            world_docs = self.memory.query_memory("type:world", agent_name="world_building_agent")
+            
+            if not world_docs:
+                logger.warning("No world context found in memory")
+                return {"name": "Generic Setting", "description": "A standard setting for the story"}
+            
+            # Parse the first world document
+            try:
+                world_data = robust_json_parse(world_docs[0]['text'])
+                if world_data and isinstance(world_data, dict):
+                    logger.info("Retrieved world context from memory")
+                    return world_data
+            except Exception as e:
+                logger.warning(f"Error parsing world data: {str(e)}")
+            
+            # If we reach here, no valid world data was found
+            return {"name": "Generic Setting", "description": "A standard setting for the story"}
+            
+        except Exception as e:
+            logger.error(f"Error getting world context: {str(e)}")
+            return {"name": "Generic Setting", "description": "A standard setting for the story"}

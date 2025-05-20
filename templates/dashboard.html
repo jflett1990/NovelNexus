@@ -1,0 +1,786 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard - {{ title }}{% endblock %}
+
+{% block extra_head %}
+<style>
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        line-height: 1.6;
+    }
+
+    .log-container {
+        max-height: 400px;
+        height: 400px;
+        overflow-y: auto;
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 4px;
+        padding: 10px;
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        font-size: 0.9rem;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+    }
+    
+    .log-entry {
+        margin-bottom: 5px;
+        border-bottom: 1px solid #e9ecef;
+        padding-bottom: 5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .log-info { color: #0d6efd; }
+    .log-warning { color: #ffc107; }
+    .log-error { color: #dc3545; }
+    .log-debug { color: #6c757d; }
+    
+    .stage-card {
+        margin-bottom: 20px;
+        box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        border-radius: 0.25rem;
+        overflow: hidden;
+    }
+    
+    .stage-card-header {
+        background-color: #f8f9fa;
+        border-bottom: 2px solid #0d6efd;
+        padding: 10px 15px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .output-container {
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 4px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+    
+    pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.25rem;
+        font-size: 0.875rem;
+    }
+    
+    .health-indicator {
+        margin-left: 10px;
+        padding: 5px 10px;
+        border-radius: 15px;
+        font-size: 0.9rem;
+    }
+    
+    .health-healthy {
+        background-color: #d4edda;
+        color: #155724;
+    }
+    
+    .health-stalled {
+        background-color: #fff3cd;
+        color: #856404;
+    }
+    
+    .health-dead {
+        background-color: #f8d7da;
+        color: #721c24;
+    }
+    
+    .health-unknown {
+        background-color: #e9ecef;
+        color: #6c757d;
+    }
+    
+    /* Progress bar styling */
+    .progress {
+        height: 20px;
+        background-color: #e9ecef;
+        border-radius: 0.25rem;
+        margin-top: 10px;
+        margin-bottom: 10px;
+        overflow: hidden;
+    }
+    
+    .progress-bar {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        text-align: center;
+        background-color: #0d6efd;
+        transition: width 0.6s ease;
+        color: white;
+        height: 100%;
+    }
+    
+    .status-info {
+        background-color: #e3f2fd;
+        border-radius: 0.25rem;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .status-card {
+        box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        border-radius: 0.25rem;
+        margin-bottom: 1.5rem;
+        overflow: hidden;
+    }
+    
+    .status-card-header {
+        background-color: #f8f9fa;
+        padding: 0.75rem 1.25rem;
+        border-bottom: 1px solid #e9ecef;
+        font-weight: 500;
+    }
+    
+    .status-card-body {
+        padding: 1.25rem;
+    }
+
+    /* Add a subtle scrollbar styling for better UI */
+    .log-container::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .log-container::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 4px;
+    }
+
+    .log-container::-webkit-scrollbar-thumb {
+        background: #c1c1c1;
+        border-radius: 4px;
+    }
+
+    .log-container::-webkit-scrollbar-thumb:hover {
+        background: #a8a8a8;
+    }
+
+    /* Add a visual indicator when new logs arrive */
+    @keyframes log-highlight {
+        0% { background-color: rgba(13, 110, 253, 0.1); }
+        100% { background-color: transparent; }
+    }
+
+    .log-entry-new {
+        animation: log-highlight 1.5s ease-out;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="row mt-4">
+        <div class="col-12">
+            <h1>{{ title }} <small class="text-muted">Dashboard</small></h1>
+            
+            <div class="status-info">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>Status:</strong> <span id="status" class="badge bg-primary">{{ status.status }}</span>
+                        <strong class="ms-3">Stage:</strong> <span id="current-stage" class="badge bg-secondary">{{ status.current_stage or 'Not started' }}</span>
+                        <span id="thread-health-container">
+                            {% if status.thread_health %}
+                            <span class="health-indicator health-{{ status.thread_health }}">
+                                Thread: {{ status.thread_health|capitalize }}
+                                {% if status.thread_health == 'stalled' or status.thread_health == 'dead' %}
+                                <button id="reset-thread-btn" class="btn btn-sm btn-warning ms-2" 
+                                        onclick="resetThread('{{ project_id }}')">Reset</button>
+                                {% endif %}
+                            </span>
+                            {% endif %}
+                        </span>
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <strong>Progress:</strong>
+                    <div class="progress">
+                        <div id="progress-bar" class="progress-bar" role="progressbar" data-progress="{{ status.progress }}" aria-valuenow="{{ status.progress }}" aria-valuemin="0" aria-valuemax="100">{{ status.progress }}%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-4">
+            <div class="status-card">
+                <div class="status-card-header">
+                    <h5 class="mb-0">Workflow Stages</h5>
+                </div>
+                <div class="status-card-body">
+                    <div class="list-group" id="stages-list">
+                        {% for stage in ['ideation', 'character', 'world', 'research', 'outline', 'writing', 'review', 'revision', 'editorial'] %}
+                        <a href="#{{ stage }}-section" class="list-group-item list-group-item-action stage-item {% if status.current_stage == stage %}active{% endif %}">
+                            {{ stage|capitalize }}
+                            {% if stage in status.completed_stages %}
+                            <span class="badge bg-success float-end">Completed</span>
+                            {% elif status.current_stage == stage %}
+                            <span class="badge bg-primary float-end">Active</span>
+                            {% else %}
+                            <span class="badge bg-secondary float-end">Pending</span>
+                            {% endif %}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            
+            <div id="thread-health-card">
+                {% if status.is_running %}
+                <div class="status-card mt-3">
+                    <div class="status-card-header">
+                        <h5 class="mb-0">Thread Health</h5>
+                    </div>
+                    <div class="status-card-body">
+                        <div class="health-status">
+                            {% if status.thread_health == 'healthy' %}
+                            <div class="alert alert-success">
+                                <i class="fas fa-check-circle"></i> Thread is running normally
+                            </div>
+                            {% elif status.thread_health == 'stalled' %}
+                            <div class="alert alert-warning">
+                                <i class="fas fa-exclamation-triangle"></i> Thread appears to be stalled
+                                <p class="mt-2">No progress has been detected recently. You may need to reset the thread.</p>
+                                <button id="reset-thread-btn-card" class="btn btn-warning mt-2" 
+                                        onclick="resetThread('{{ project_id }}')">Reset Thread</button>
+                            </div>
+                            {% elif status.thread_health == 'dead' %}
+                            <div class="alert alert-danger">
+                                <i class="fas fa-times-circle"></i> Thread is not responding
+                                <p class="mt-2">The thread appears to have stopped. Please reset the thread.</p>
+                                <button id="reset-thread-btn-card" class="btn btn-danger mt-2" 
+                                        onclick="resetThread('{{ project_id }}')">Reset Thread</button>
+                            </div>
+                            {% else %}
+                            <div class="alert alert-secondary">
+                                <i class="fas fa-question-circle"></i> Thread health status unknown
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="col-md-8">
+            <div class="status-card">
+                <div class="status-card-header">
+                    <h5 class="mb-0">Current Activity</h5>
+                </div>
+                <div class="status-card-body">
+                    <div class="agent-status-container" id="agent-status-container">
+                        <div class="d-flex align-items-center">
+                            <div class="me-3">
+                                <span class="activity-indicator spinner-border spinner-border-sm text-primary" role="status" id="agent-activity-indicator"></span>
+                            </div>
+                            <div>
+                                <h5 class="mb-1" id="current-agent-name">No agent running</h5>
+                                <p class="mb-0 text-muted" id="current-agent-task">Waiting to start or process complete</p>
+                            </div>
+                        </div>
+                        <div class="mt-3 agent-description" id="agent-description">
+                            When a workflow is running, you'll see the current active agent and its task here.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        
+            <div class="stage-outputs" id="stage-outputs">
+                {% for stage, data in stage_outputs.items() %}
+                <div class="stage-card" id="{{ stage }}-section">
+                    <div class="stage-card-header">
+                        <h5 class="mb-0">{{ stage|capitalize }} Output</h5>
+                        {% if stage in status.completed_stages %}
+                        <span class="badge bg-success">Completed</span>
+                        {% elif status.current_stage == stage %}
+                        <span class="badge bg-primary">Active</span>
+                        {% else %}
+                        <span class="badge bg-secondary">Pending</span>
+                        {% endif %}
+                    </div>
+                    <div class="card-body">
+                        <div class="output-container">
+                            <pre>{{ data|tojson(indent=2) }}</pre>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div id="chapters-container">
+        {% if chapters %}
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="status-card">
+                    <div class="status-card-header">
+                        <h5 class="mb-0">Chapters</h5>
+                    </div>
+                    <div class="status-card-body">
+                        <div class="accordion" id="chaptersAccordion">
+                            {% for chapter in chapters %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="heading{{ loop.index }}">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                                            data-bs-target="#collapse{{ loop.index }}" aria-expanded="false" 
+                                            aria-controls="collapse{{ loop.index }}">
+                                        {{ chapter.title }} 
+                                        {% if chapter.content %}
+                                        <span class="badge bg-success ms-2">Complete</span>
+                                        {% else %}
+                                        <span class="badge bg-warning ms-2">Pending</span>
+                                        {% endif %}
+                                    </button>
+                                </h2>
+                                <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" 
+                                     aria-labelledby="heading{{ loop.index }}" data-bs-parent="#chaptersAccordion">
+                                    <div class="accordion-body">
+                                        {% if chapter.content %}
+                                        <pre>{{ chapter.content }}</pre>
+                                        {% else %}
+                                        <p class="text-muted">Content not yet generated</p>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="row mt-4 mb-4">
+        <div class="col-12">
+            <div class="status-card">
+                <div class="status-card-header">
+                    <h5 class="mb-0">Actions</h5>
+                </div>
+                <div class="status-card-body">
+                    <a href="/api/project/{{ project_id }}/manuscript" class="btn btn-primary" target="_blank">
+                        Download Manuscript
+                    </a>
+                    <a href="/" class="btn btn-secondary">
+                        Back to Home
+                    </a>
+                    <button id="refresh-btn" class="btn btn-info">
+                        Refresh Now
+                    </button>
+                    {% if status.status == 'complete' %}
+                    <a href="/generate" class="btn btn-success">
+                        Start New Project
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Thread Reset Response Modal -->
+<div class="modal fade" id="threadResetModal" tabindex="-1" aria-labelledby="threadResetModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="threadResetModalLabel">Thread Reset</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="threadResetModalBody">
+                Processing...
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="location.reload()">Refresh Page</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-update interval in milliseconds
+    const UPDATE_INTERVAL = 3000;
+    let updateTimer;
+    
+    // Agent descriptions for better context
+    const agentDescriptions = {
+        'ideation_agent': 'Generating creative ideas and concepts for your novel',
+        'character_agent': 'Creating compelling characters with unique traits and backgrounds',
+        'world_building_agent': 'Developing the world, settings, and environment for your story',
+        'research_agent': 'Researching relevant topics to enhance your story',
+        'outline_agent': 'Creating a structured outline for your novel',
+        'writing_agent': 'Writing the prose based on the outline',
+        'review_agent': 'Reviewing the manuscript for consistency and quality',
+        'revision_agent': 'Making revisions based on the review feedback',
+        'editorial_agent': 'Performing editorial enhancements and final polish',
+        'plot_agent': 'Developing the plot points and narrative structure',
+        'manuscript_agent': 'Compiling the final manuscript',
+        'chapter_planner_agent': 'Planning individual chapter structure and flow',
+        'chapter_writer_agent': 'Writing individual chapter content',
+        'longform_expander': 'Expanding content for longer narrative sections',
+        'manuscript_refiner': 'Refining the manuscript for style and consistency'
+    };
+    
+    // Document ready function
+    document.addEventListener('DOMContentLoaded', function() {
+        // Set initial progress bar width
+        const progressBar = document.getElementById('progress-bar');
+        if (progressBar) {
+            const progress = progressBar.getAttribute('data-progress') || 0;
+            progressBar.style.width = `${progress}%`;
+        }
+        
+        // Auto-updates disabled - only manual refresh
+        
+        // Setup refresh button
+        document.getElementById('refresh-btn').addEventListener('click', function() {
+            updateDashboard();
+        });
+        
+        // Initial update
+        updateDashboard();
+    });
+    
+    function startAutoUpdate() {
+        // Auto-update functionality disabled
+        console.log("Auto-updates have been disabled");
+    }
+    
+    function updateDashboard() {
+        // Show loading indication
+        const refreshBtn = document.getElementById('refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Refreshing...';
+            refreshBtn.disabled = true;
+        }
+        
+        fetch(`/api/dashboard-data/{{ project_id }}`)
+            .then(response => response.json())
+            .then(data => {
+                // Update status
+                if (data.status) {
+                    const statusBadge = document.getElementById('status');
+                    statusBadge.textContent = data.status.status || 'Unknown';
+                    
+                    // Update badge color based on status
+                    statusBadge.className = 'badge';
+                    if (data.status.status === 'running') {
+                        statusBadge.classList.add('bg-primary');
+                    } else if (data.status.status === 'completed' || data.status.status === 'complete') {
+                        statusBadge.classList.add('bg-success');
+                    } else if (data.status.status === 'error') {
+                        statusBadge.classList.add('bg-danger');
+                    } else {
+                        statusBadge.classList.add('bg-secondary');
+                    }
+                    
+                    // Update current stage
+                    const stageElem = document.getElementById('current-stage');
+                    stageElem.textContent = data.status.current_stage || 'None';
+                    
+                    // Update progress bar with animation
+                    const progressBar = document.getElementById('progress-bar');
+                    const progress = data.status.progress || 0;
+                    // Only update if there's a change to avoid unnecessary reflows
+                    if (parseInt(progressBar.getAttribute('aria-valuenow')) !== progress) {
+                        progressBar.setAttribute('data-progress', progress);
+                        progressBar.style.width = `${progress}%`;
+                        progressBar.textContent = `${progress}%`;
+                        progressBar.setAttribute('aria-valuenow', progress);
+                    }
+                    
+                    // Update thread health
+                    updateThreadHealth(data.status);
+                    
+                    // Update stage items
+                    updateStagesList(data.status);
+                    
+                    // Update current agent status
+                    updateAgentStatus(data.status);
+                }
+                
+                // Update stage output if available
+                if (data.stage_output && data.status.current_stage) {
+                    updateStageOutput(data.status.current_stage, data.stage_output);
+                }
+                
+                // Reset refresh button
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
+                    refreshBtn.disabled = false;
+                }
+            })
+            .catch(error => {
+                console.error('Error updating dashboard:', error);
+                // Reset refresh button on error
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
+                    refreshBtn.disabled = false;
+                }
+            });
+    }
+    
+    function updateAgentStatus(status) {
+        const nameElement = document.getElementById('current-agent-name');
+        const taskElement = document.getElementById('current-agent-task');
+        const descriptionElement = document.getElementById('agent-description');
+        const indicatorElement = document.getElementById('agent-activity-indicator');
+        
+        if (status.is_running && status.current_agent) {
+            // Show activity indicator
+            indicatorElement.style.display = 'inline-block';
+            
+            // Format agent name for display (remove _agent suffix and capitalize)
+            let displayName = status.current_agent;
+            if (displayName.endsWith('_agent')) {
+                displayName = displayName.slice(0, -6);
+            }
+            displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1).replace(/_/g, ' ') + ' Agent';
+            
+            nameElement.textContent = displayName;
+            
+            // Get current stage name for the task description
+            const stageName = status.current_stage ? 
+                status.current_stage.charAt(0).toUpperCase() + status.current_stage.slice(1).replace(/_/g, ' ') : 
+                'Current task';
+                
+            taskElement.textContent = `Working on ${stageName}`;
+            
+            // Get description from our dictionary or use a default
+            if (status.current_agent in agentDescriptions) {
+                descriptionElement.textContent = agentDescriptions[status.current_agent];
+            } else {
+                descriptionElement.textContent = `Processing ${stageName.toLowerCase()}`;
+            }
+        } else if (status.is_complete) {
+            // Hide activity indicator for completed state
+            indicatorElement.style.display = 'none';
+            
+            nameElement.textContent = 'Process Complete';
+            taskElement.textContent = 'All tasks have been completed';
+            descriptionElement.textContent = 'Your manuscript has been generated successfully.';
+        } else if (!status.is_running) {
+            // Hide activity indicator for not running state
+            indicatorElement.style.display = 'none';
+            
+            nameElement.textContent = 'No agent running';
+            taskElement.textContent = 'Waiting to start';
+            descriptionElement.textContent = 'When a workflow is running, you\'ll see the current active agent and its task here.';
+        } else {
+            // Default case - status unclear
+            indicatorElement.style.display = 'none';
+            
+            nameElement.textContent = 'Status unknown';
+            taskElement.textContent = 'Unable to determine current activity';
+            descriptionElement.textContent = 'Try refreshing the page or check the system status.';
+        }
+    }
+    
+    function updateThreadHealth(status) {
+        const container = document.getElementById('thread-health-container');
+        if (!container) return;
+        
+        if (status.thread_health) {
+            let html = `
+                <span class="health-indicator health-${status.thread_health}">
+                    Thread: ${status.thread_health.charAt(0).toUpperCase() + status.thread_health.slice(1)}
+                    ${(status.thread_health === 'stalled' || status.thread_health === 'dead') ? 
+                      `<button id="reset-thread-btn" class="btn btn-sm btn-warning ms-2" 
+                              onclick="resetThread('${status.project_id}')">Reset</button>` : ''}
+                </span>
+            `;
+            container.innerHTML = html;
+        } else {
+            container.innerHTML = '';
+        }
+        
+        // Also update thread health card
+        updateThreadHealthCard(status);
+    }
+    
+    function updateThreadHealthCard(status) {
+        const container = document.getElementById('thread-health-card');
+        if (!container) return;
+        
+        if (status.is_running) {
+            let healthHtml = '';
+            
+            if (status.thread_health === 'healthy') {
+                healthHtml = `
+                    <div class="alert alert-success">
+                        <i class="fas fa-check-circle"></i> Thread is running normally
+                    </div>
+                `;
+            } else if (status.thread_health === 'stalled') {
+                healthHtml = `
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle"></i> Thread appears to be stalled
+                        <p class="mt-2">No progress has been detected recently. You may need to reset the thread.</p>
+                        <button id="reset-thread-btn-card" class="btn btn-warning mt-2" 
+                                onclick="resetThread('${status.project_id}')">Reset Thread</button>
+                    </div>
+                `;
+            } else if (status.thread_health === 'dead') {
+                healthHtml = `
+                    <div class="alert alert-danger">
+                        <i class="fas fa-times-circle"></i> Thread is not responding
+                        <p class="mt-2">The thread appears to have stopped. Please reset the thread.</p>
+                        <button id="reset-thread-btn-card" class="btn btn-danger mt-2" 
+                                onclick="resetThread('${status.project_id}')">Reset Thread</button>
+                    </div>
+                `;
+            } else {
+                healthHtml = `
+                    <div class="alert alert-secondary">
+                        <i class="fas fa-question-circle"></i> Thread health status unknown
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = `
+                <div class="status-card mt-3">
+                    <div class="status-card-header">
+                        <h5 class="mb-0">Thread Health</h5>
+                    </div>
+                    <div class="status-card-body">
+                        <div class="health-status">
+                            ${healthHtml}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            container.innerHTML = '';
+        }
+    }
+    
+    function updateStagesList(status) {
+        const container = document.getElementById('stages-list');
+        if (!container) return;
+        
+        const stages = ['ideation', 'character', 'world', 'research', 'outline', 'writing', 'review', 'revision', 'editorial'];
+        let html = '';
+        
+        stages.forEach(stage => {
+            let badgeClass = 'bg-secondary';
+            let badgeText = 'Pending';
+            let isActive = false;
+            
+            if (status.completed_stages && status.completed_stages.includes(stage)) {
+                badgeClass = 'bg-success';
+                badgeText = 'Completed';
+            } else if (status.current_stage === stage) {
+                badgeClass = 'bg-primary';
+                badgeText = 'Active';
+                isActive = true;
+            }
+            
+            html += `
+                <a href="#${stage}-section" class="list-group-item list-group-item-action stage-item ${isActive ? 'active' : ''}">
+                    ${stage.charAt(0).toUpperCase() + stage.slice(1)}
+                    <span class="badge ${badgeClass} float-end">${badgeText}</span>
+                </a>
+            `;
+        });
+        
+        container.innerHTML = html;
+    }
+    
+    function updateStageOutput(stageName, output) {
+        // Create or update stage output section
+        if (!output) return;
+        
+        const outputsContainer = document.getElementById('stage-outputs');
+        if (!outputsContainer) return;
+        
+        // Check if this stage section already exists
+        let stageSection = document.getElementById(`${stageName}-section`);
+        
+        if (!stageSection) {
+            // Create new stage section
+            stageSection = document.createElement('div');
+            stageSection.id = `${stageName}-section`;
+            stageSection.className = 'stage-card';
+            outputsContainer.appendChild(stageSection);
+            
+            // Add header and body
+            stageSection.innerHTML = `
+                <div class="stage-card-header">
+                    <h5 class="mb-0">${stageName.charAt(0).toUpperCase() + stageName.slice(1)} Output</h5>
+                    <span class="badge bg-primary">Active</span>
+                </div>
+                <div class="card-body">
+                    <div class="output-container">
+                        <pre>${JSON.stringify(output, null, 2)}</pre>
+                    </div>
+                </div>
+            `;
+        } else {
+            // Update existing content
+            const outputContainer = stageSection.querySelector('.output-container');
+            if (outputContainer) {
+                const pre = outputContainer.querySelector('pre');
+                if (pre) {
+                    pre.textContent = JSON.stringify(output, null, 2);
+                }
+            }
+        }
+    }
+    
+    function resetThread(projectId) {
+        // Show modal
+        const resetModal = new bootstrap.Modal(document.getElementById('threadResetModal'));
+        resetModal.show();
+        
+        // Send reset request
+        fetch(`/api/project/${projectId}/reset-thread`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            const modalBody = document.getElementById('threadResetModalBody');
+            if (data.success) {
+                modalBody.innerHTML = `
+                    <div class="alert alert-success">
+                        <p><i class="fas fa-check-circle"></i> Thread reset successfully.</p>
+                        <p>The project workflow will resume from where it left off.</p>
+                    </div>
+                `;
+                
+                // Reload after a short delay
+                setTimeout(() => {
+                    location.reload();
+                }, 2000);
+            } else {
+                modalBody.innerHTML = `
+                    <div class="alert alert-danger">
+                        <p><i class="fas fa-times-circle"></i> Failed to reset thread.</p>
+                        <p>Error: ${data.error || 'Unknown error'}</p>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            document.getElementById('threadResetModalBody').innerHTML = `
+                <div class="alert alert-danger">
+                    <p><i class="fas fa-times-circle"></i> Error occurred while resetting thread.</p>
+                    <p>Please try again or contact support.</p>
+                </div>
+            `;
+        });
+    }
+</script>
+{% endblock %} 

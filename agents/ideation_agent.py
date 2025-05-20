@@ -1,11 +1,13 @@
 import logging
 import json
 from typing import Dict, Any, List, Optional
+import uuid
 
-from models.ollama_client import get_ollama_client
+
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.ideation_schema import IDEATION_SCHEMA
+from utils.model_utils import select_model
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +20,7 @@ class IdeationAgent:
         self,
         project_id: str,
         memory: DynamicMemory,
-        use_openai: bool = True,
-        use_ollama: bool = True
+        use_openai: bool = True
     ):
         """
         Initialize the Ideation Agent.
@@ -28,14 +29,11 @@ class IdeationAgent:
             project_id: Unique identifier for the project
             memory: Dynamic memory instance
             use_openai: Whether to use OpenAI models
-            use_ollama: Whether to use Ollama models
         """
         self.project_id = project_id
         self.memory = memory
         self.use_openai = use_openai
-        self.use_ollama = use_ollama
         
-        self.ollama_client = get_ollama_client() if use_ollama else None
         self.openai_client = get_openai_client() if use_openai else None
         
         self.name = "ideation_agent"
@@ -85,59 +83,39 @@ Provide output in JSON format according to the provided schema."""
         user_prompt += f"\n\nThe ideas should have {complexity} complexity."
         user_prompt += f"\n\nRespond with ideas formatted according to this JSON schema: {json.dumps(IDEATION_SCHEMA)}"
         
+        logger.debug(f"Built ideation prompt for project {self.project_id}. Using OpenAI: {self.use_openai}")
+        
         try:
-            # Try OpenAI first if enabled
+            # Try OpenAI for generation
             if self.use_openai and self.openai_client:
                 try:
+                    logger.info(f"Attempting to generate ideas using OpenAI for project {self.project_id}")
                     response = self.openai_client.generate(
                         prompt=user_prompt,
                         system_prompt=system_prompt,
                         json_mode=True,
-                        temperature=0.8
+                        temperature=0.8,
+                        agent_name=self.name
                     )
                     
                     ideas = response["parsed_json"]
-                    logger.info(f"Generated {len(ideas.get('ideas', []))} ideas using OpenAI")
+                    logger.info(f"Generated {len(ideas.get('ideas', []))} ideas using OpenAI for project {self.project_id}")
                     
                     # Store in memory
+                    logger.debug(f"Storing OpenAI generated ideas in memory for project {self.project_id}")
                     self._store_in_memory(ideas)
+                    logger.info(f"Successfully stored ideas in memory for project {self.project_id}")
                     
                     return ideas
                 except Exception as e:
-                    logger.warning(f"OpenAI ideation failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI ideation failed: {e}")
+                    raise Exception(f"Failed to generate ideas: {e}")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    ideas = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Generated {len(ideas.get('ideas', []))} ideas using Ollama")
-                
-                # Store in memory
-                self._store_in_memory(ideas)
-                
-                return ideas
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to generate ideas")
+            logger.error(f"No available AI service (OpenAI) to generate ideas for project {self.project_id}")
+            raise Exception("No available AI service (OpenAI) to generate ideas")
             
         except Exception as e:
-            logger.error(f"Ideation error: {e}")
+            logger.error(f"Ideation error: {e}", exc_info=True)
             raise Exception(f"Failed to generate ideas: {e}")
     
     def refine_idea(self, idea_id: str, feedback: str) -> Dict[str, Any]:
@@ -175,14 +153,15 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
 """
         
         try:
-            # Try OpenAI first if enabled
+            # Use OpenAI for refinement
             if self.use_openai and self.openai_client:
                 try:
                     response = self.openai_client.generate(
                         prompt=user_prompt,
                         system_prompt=system_prompt,
                         json_mode=True,
-                        temperature=0.7
+                        temperature=0.7,
+                        agent_name=self.name
                     )
                     
                     refined_idea = response["parsed_json"]
@@ -201,48 +180,13 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
                     
                     return refined_idea
                 except Exception as e:
-                    logger.warning(f"OpenAI idea refinement failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI idea refinement failed: {e}")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    refined_idea = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Refined idea {idea_id} using Ollama")
-                
-                # Update the idea ID if it changed
-                if "id" in refined_idea and refined_idea["id"] != idea_id:
-                    refined_idea["id"] = idea_id
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(refined_idea),
-                    self.name,
-                    metadata={"type": "refined_idea", "original_id": idea_id}
-                )
-                
-                return refined_idea
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to refine idea")
+            logger.error(f"No available AI service (OpenAI) to refine ideas for project {self.project_id}")
+            raise Exception("No available AI service (OpenAI) to refine ideas")
             
         except Exception as e:
-            logger.error(f"Idea refinement error: {e}")
+            logger.error(f"Idea refinement error: {e}", exc_info=True)
             raise Exception(f"Failed to refine idea: {e}")
     
     def _store_in_memory(self, ideas: Dict[str, Any]) -> None:
@@ -250,25 +194,18 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
         Store generated ideas in memory.
         
         Args:
-            ideas: Dictionary with generated ideas
+            ideas: Dictionary with ideas to store
         """
-        if "ideas" not in ideas or not isinstance(ideas["ideas"], list):
-            logger.warning("Invalid ideas format for memory storage")
+        if not ideas or 'ideas' not in ideas:
+            logger.warning(f"No ideas to store for project {self.project_id}")
             return
         
-        # Store the entire ideas dict
-        self.memory.add_document(
-            json.dumps(ideas),
-            self.name,
-            metadata={"type": "ideation_results"}
-        )
-        
-        # Store each individual idea for easier retrieval
-        for idea in ideas["ideas"]:
-            idea_id = idea.get("id")
-            if not idea_id:
-                continue
-                
+        # Store each idea separately
+        for idea in ideas['ideas']:
+            idea_id = idea.get('id', str(uuid.uuid4()))
+            if 'id' not in idea:
+                idea['id'] = idea_id
+            
             self.memory.add_document(
                 json.dumps(idea),
                 self.name,
@@ -277,50 +214,18 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
     
     def get_best_idea(self) -> Dict[str, Any]:
         """
-        Get the best idea from memory.
+        Get the best idea for the project.
         
         Returns:
             Dictionary with the best idea
         """
-        # Query for all ideas in memory
-        idea_docs = self.memory.get_agent_memory(self.name)
+        # Query memory for all ideas
+        ideas = self.memory.query_memory("type:idea", agent_name=self.name)
         
-        if not idea_docs:
-            raise ValueError("No ideas found in memory")
+        if not ideas:
+            raise ValueError(f"No ideas found for project {self.project_id}")
         
-        # Filter for individual ideas (not idea sets)
-        individual_ideas = []
-        
-        for doc in idea_docs:
-            metadata = doc.get('metadata', {})
-            if metadata.get('type') == 'idea' or metadata.get('type') == 'refined_idea':
-                try:
-                    idea = json.loads(doc['text'])
-                    individual_ideas.append(idea)
-                except json.JSONDecodeError:
-                    continue
-        
-        if not individual_ideas:
-            raise ValueError("No valid individual ideas found in memory")
-        
-        # Get the most recent refined idea, or the highest-rated idea
-        refined_ideas = [idea for idea in individual_ideas 
-                        if idea.get('metadata', {}).get('type') == 'refined_idea']
-        
-        if refined_ideas:
-            # Sort by timestamp and return the most recent
-            sorted_refined = sorted(
-                refined_ideas,
-                key=lambda x: x.get('metadata', {}).get('timestamp', ''),
-                reverse=True
-            )
-            return sorted_refined[0]
-        
-        # If no refined ideas, return the highest score idea
-        sorted_ideas = sorted(
-            individual_ideas,
-            key=lambda x: float(x.get('score', 0)),
-            reverse=True
-        )
-        
-        return sorted_ideas[0]
+        # For now, just return the first idea (most recent)
+        # In a future version, we could implement more sophisticated selection
+        best_idea_doc = ideas[0]
+        return json.loads(best_idea_doc['text'])

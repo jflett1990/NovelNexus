@@ -1,112 +1,97 @@
-{% extends "layout.html" %}
+{% extends 'base.html' %}
 
-{% block title %}Start New Manuscript Project{% endblock %}
+{% block title %}Create New Project - NovelNexus{% endblock %}
 
 {% block content %}
 <div class="row">
-    <div class="col-lg-8 mx-auto">
+    <div class="col-md-8 offset-md-2">
         <div class="card">
             <div class="card-header">
-                <h2 class="mb-0">Create a New Manuscript Project</h2>
+                <h2>Create New Manuscript</h2>
             </div>
             <div class="card-body">
-                <form action="{{ url_for('generate') }}" method="POST">
-                    <div class="mb-4">
-                        <h4>Basic Information</h4>
-                        <div class="mb-3">
-                            <label for="title" class="form-label">Book Title (optional)</label>
-                            <input type="text" class="form-control" id="title" name="title" placeholder="Leave blank to have AI generate a title">
-                            <div class="form-text">If left blank, a title will be generated based on your other inputs.</div>
-                        </div>
-                        <div class="mb-3">
-                            <label for="genre" class="form-label">Genre</label>
-                            <select class="form-select" id="genre" name="genre" required>
-                                <option value="" selected disabled>Select a genre</option>
-                                <option value="fantasy">Fantasy</option>
-                                <option value="science_fiction">Science Fiction</option>
-                                <option value="mystery">Mystery</option>
-                                <option value="thriller">Thriller</option>
-                                <option value="romance">Romance</option>
-                                <option value="historical_fiction">Historical Fiction</option>
-                                <option value="literary_fiction">Literary Fiction</option>
-                                <option value="young_adult">Young Adult</option>
-                                <option value="horror">Horror</option>
-                                <option value="adventure">Adventure</option>
-                                <option value="dystopian">Dystopian</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label for="target_length" class="form-label">Target Length</label>
-                            <select class="form-select" id="target_length" name="target_length" required>
-                                <option value="short_story">Short Story (~7,500 words)</option>
-                                <option value="novella">Novella (~30,000 words)</option>
-                                <option value="novel" selected>Novel (~80,000 words)</option>
-                                <option value="epic_novel">Epic Novel (~120,000 words)</option>
-                            </select>
-                        </div>
+                <form method="post">
+                    <div class="mb-3">
+                        <label for="title" class="form-label">Title</label>
+                        <input type="text" class="form-control" id="title" name="title" placeholder="Enter book title (leave blank for AI suggestion)">
+                        <div class="form-text">If left blank, an AI-generated title will be provided based on your other inputs.</div>
                     </div>
-
-                    <div class="mb-4">
-                        <h4>Configuration</h4>
-                        <div class="mb-3">
-                            <label for="complexity" class="form-label">Complexity Level</label>
-                            <select class="form-select" id="complexity" name="complexity">
-                                <option value="low">Low - Simpler plot and characters</option>
-                                <option value="medium" selected>Medium - Balanced complexity</option>
-                                <option value="high">High - Complex plot and deep character development</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <div class="alert alert-info">
-                                <strong>Local Setup Required:</strong> This application uses Ollama for text generation and embeddings.
-                                <p class="mt-2">When running locally, please ensure you have:</p>
-                                <ol>
-                                    <li>Installed Ollama from <a href="https://ollama.ai" target="_blank">https://ollama.ai</a></li>
-                                    <li>Downloaded the required models with these commands:</li>
-                                </ol>
-                                <pre class="bg-light p-2 rounded"><code>ollama pull deepseek-v2:16b
-ollama pull snowflake-arctic-embed:335m</code></pre>
-                            </div>
-                        </div>
+                    
+                    <div class="mb-3">
+                        <label for="genre" class="form-label">Genre</label>
+                        <select class="form-select" id="genre" name="genre" required>
+                            <option value="" selected disabled>Choose a genre...</option>
+                            <option value="Science Fiction">Science Fiction</option>
+                            <option value="Fantasy">Fantasy</option>
+                            <option value="Mystery">Mystery</option>
+                            <option value="Romance">Romance</option>
+                            <option value="Thriller">Thriller</option>
+                            <option value="Horror">Horror</option>
+                            <option value="Historical Fiction">Historical Fiction</option>
+                            <option value="Literary Fiction">Literary Fiction</option>
+                            <option value="Young Adult">Young Adult</option>
+                            <option value="Adventure">Adventure</option>
+                        </select>
                     </div>
-
-                    <div class="mb-4">
-                        <h4>Initial Prompt (Optional)</h4>
-                        <div class="mb-3">
-                            <label for="initial_prompt" class="form-label">Ideas or Concepts to Include</label>
-                            <textarea class="form-control" id="initial_prompt" name="initial_prompt" rows="4" placeholder="Enter any initial ideas, concepts, or themes you'd like to include in your manuscript..."></textarea>
-                            <div class="form-text">This will guide the ideation phase. You can leave it blank for completely AI-generated content.</div>
-                        </div>
+                    
+                    <div class="mb-3">
+                        <label for="length" class="form-label">Length</label>
+                        <select class="form-select" id="length" name="target_length">
+                            <option value="short_story">Short Story (~7,500 words)</option>
+                            <option value="novella">Novella (~30,000 words)</option>
+                            <option value="novel" selected>Novel (~80,000 words)</option>
+                            <option value="epic_novel">Epic Novel (~120,000 words)</option>
+                        </select>
                     </div>
-
-                    <div class="d-grid gap-2">
-                        <button type="submit" class="btn btn-primary btn-lg">
-                            <i data-feather="play" class="me-2"></i> Start Generation
-                        </button>
+                    
+                    <div class="mb-3">
+                        <label for="complexity" class="form-label">Complexity</label>
+                        <select class="form-select" id="complexity" name="complexity">
+                            <option value="simple">Simple - Straightforward language and plot</option>
+                            <option value="medium" selected>Medium - Balanced complexity</option>
+                            <option value="complex">Complex - Intricate language and multilayered plot</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="themes" class="form-label">Themes (comma-separated)</label>
+                        <input type="text" class="form-control" id="themes" name="themes" placeholder="love, betrayal, redemption, etc.">
+                        <div class="form-text">Add key themes to include in your manuscript.</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="initial_prompt" class="form-label">Initial Prompt (optional)</label>
+                        <textarea class="form-control" id="initial_prompt" name="initial_prompt" rows="3" placeholder="Provide additional guidance for your manuscript..."></textarea>
+                        <div class="form-text">Add any specific ideas, concepts, or directions you'd like to include.</div>
+                    </div>
+                    
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">Generate Manuscript</button>
                     </div>
                 </form>
             </div>
         </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                <h3>How It Works</h3>
+            </div>
+            <div class="card-body">
+                <ol>
+                    <li><strong>Ideation</strong> - Generate book concepts based on your inputs</li>
+                    <li><strong>Character Development</strong> - Create detailed characters for your story</li>
+                    <li><strong>World Building</strong> - Design rich, immersive settings</li>
+                    <li><strong>Research</strong> - Gather relevant background information</li>
+                    <li><strong>Outlining</strong> - Create a chapter-by-chapter outline</li>
+                    <li><strong>Writing</strong> - Generate the content for each chapter</li>
+                    <li><strong>Revision</strong> - Review and refine the writing</li>
+                    <li><strong>Editorial</strong> - Final polishing and assembly</li>
+                </ol>
+                <p class="alert alert-info mt-3">
+                    <i class="bi bi-info-circle"></i> This process can take several minutes to complete. You'll be able to track progress on the dashboard.
+                </p>
+            </div>
+        </div>
     </div>
 </div>
-{% endblock %}
-
-{% block extra_js %}
-<script>
-    // Simple form validation
-    document.addEventListener('DOMContentLoaded', function() {
-        const form = document.querySelector('form');
-        form.addEventListener('submit', function(event) {
-            const genreSelect = document.getElementById('genre');
-            if (genreSelect.value === '') {
-                event.preventDefault();
-                alert('Please select a genre');
-                genreSelect.focus();
-            }
-            
-            // Simplified validation - Ollama validation happens on the server side
-            // We'll warn users if they haven't set up Ollama locally
-        });
-    });
-</script>
 {% endblock %}

@@ -1,0 +1,10 @@
+{
+  "document_count": 30,
+  "agent_memories": {
+    "central_hub": 17,
+    "ideation_agent": 4,
+    "character_agent": 2,
+    "research_agent": 7
+  },
+  "last_updated": "2025-05-19T00:34:57.896305"
+}

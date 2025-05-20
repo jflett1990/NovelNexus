@@ -30,6 +30,8 @@
                             The AI is currently working on this stage. This may take several minutes depending on the complexity.
                         {% elif project.is_complete %}
                             All stages have been completed. You can now view the final manuscript.
+                        {% elif project.errors and project.errors|length > 0 %}
+                            The generation process encountered errors. See the error details below.
                         {% else %}
                             The process has not started yet or is paused.
                         {% endif %}
@@ -71,7 +73,11 @@
                         <div class="workflow-stage 
                             {% if stage.id in project.completed_stages %}completed
                             {% elif stage.id == project.current_stage %}active
-                            {% endif %}">
+                            {% endif %}" data-stage-id="{{ stage.id }}" 
+                             {% if stage.id in project.completed_stages or stage.id == project.current_stage %}
+                             onclick="showStageDetails('{{ stage.id }}', '{{ stage.name }}')"
+                             style="cursor: pointer;"
+                             {% endif %}>
                             <span class="workflow-stage-icon">
                                 <i data-feather="{{ stage.icon }}" style="width: 16px; height: 16px;"></i>
                             </span>
@@ -122,14 +128,26 @@
                         </button>
                     </div>
                 {% else %}
-                    <div class="alert alert-warning mb-4" role="alert">
-                        <i data-feather="alert-circle" class="me-2"></i>
-                        The generation process has encountered an issue or has not been started.
+                    <div class="alert {{ 'alert-danger' if project.errors and project.errors|length > 0 else 'alert-warning' }} mb-4" role="alert">
+                        <i data-feather="{{ 'alert-triangle' if project.errors and project.errors|length > 0 else 'alert-circle' }}" class="me-2"></i>
+                        {% if project.errors and project.errors|length > 0 %}
+                            The generation process encountered errors that prevented completion.
+                        {% else %}
+                            The generation process has not been started or was paused.
+                        {% endif %}
                     </div>
                     <div class="d-grid gap-2">
                         <a href="{{ url_for('generate') }}" class="btn btn-primary">
-                            <i data-feather="play" class="me-2"></i> Restart Generation
+                            <i data-feather="play" class="me-2"></i> {{ 'Restart Generation' if project.errors and project.errors|length > 0 else 'Start Generation' }}
                         </a>
+                        {% if project.errors and project.errors|length > 0 and project.progress >= 40 %}
+                        <button class="btn btn-outline-secondary" id="refreshStatus">
+                            <i data-feather="refresh-cw" class="me-2"></i> Refresh Status
+                        </button>
+                        <button class="btn btn-outline-danger" id="resetProject">
+                            <i data-feather="alert-triangle" class="me-2"></i> Reset Project
+                        </button>
+                        {% endif %}
                     </div>
                 {% endif %}
             </div>
@@ -194,38 +212,185 @@
         </div>
     </div>
 </div>
+
+<!-- Add a new modal for stage details -->
+<div class="modal fade" id="stageDetailModal" tabindex="-1" aria-labelledby="stageDetailModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="stageDetailModalLabel">Stage Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="text-center mb-4" id="stageDetailLoading">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Loading stage details...</p>
+                </div>
+                <div id="stageDetailContent" class="d-none">
+                    <!-- Content will be populated via JavaScript -->
+                </div>
+                <div class="alert alert-danger d-none" id="stageDetailError">
+                    An error occurred while loading stage details.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // Auto-refresh status every 30 seconds if the project is running
+        // Auto-refresh status every 5 seconds if the project is running
         {% if project.is_running %}
         const refreshInterval = setInterval(function() {
             fetchProjectStatus();
-        }, 30000);
+        }, 5000);
+        
+        // Clear interval if page is unloaded
+        window.addEventListener('beforeunload', function() {
+            clearInterval(refreshInterval);
+        });
         {% endif %}
         
         // Manual refresh button
         const refreshBtn = document.getElementById('refreshStatus');
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
-                fetchProjectStatus();
+                this.disabled = true;
+                this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Refreshing...';
+                fetchProjectStatus(true);
             });
         }
         
-        function fetchProjectStatus() {
+        // Reset project button
+        const resetBtn = document.getElementById('resetProject');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', function() {
+                if (confirm('Are you sure you want to reset this project? This will restart the generation process from the beginning.')) {
+                    this.disabled = true;
+                    this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Resetting...';
+                    
+                    fetch(`/api/project/{{ project.id }}/reset`, {
+                        method: 'POST'
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            window.location.reload();
+                        } else {
+                            return response.json().then(data => {
+                                throw new Error(data.error || 'Failed to reset project');
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        alert(`Error: ${error.message}`);
+                        this.disabled = false;
+                        this.innerHTML = '<i data-feather="alert-triangle" class="me-2"></i> Reset Project';
+                        feather.replace();
+                    });
+                }
+            });
+        }
+        
+        function fetchProjectStatus(isManualRefresh = false) {
             fetch(`/api/project/{{ project.id }}/status`)
                 .then(response => response.json())
                 .then(data => {
+                    // Update progress bar without reloading
+                    if (data.progress !== {{ project.progress }}) {
+                        const progressBar = document.querySelector('.progress-bar');
+                        if (progressBar) {
+                            progressBar.style.width = `${data.progress}%`;
+                            progressBar.setAttribute('aria-valuenow', data.progress);
+                            progressBar.textContent = `${data.progress}%`;
+                        }
+                    }
+                    
+                    // Update current stage display without reloading
+                    if (data.current_stage !== '{{ project.current_stage }}') {
+                        const currentStageElement = document.querySelector('h5');
+                        if (currentStageElement && currentStageElement.textContent.includes('Current Stage')) {
+                            currentStageElement.textContent = 'Current Stage: ' + 
+                                (data.current_stage ? (data.current_stage.replace('_', ' ').charAt(0).toUpperCase() + 
+                                data.current_stage.replace('_', ' ').slice(1)) : 'Not started');
+                        }
+                        
+                        // Update workflow stages
+                        updateWorkflowStages(data.current_stage, data.completed_stages);
+                    }
+                    
+                    // Check if status changed
                     if (data.status !== '{{ project.status }}' || 
-                        data.progress !== {{ project.progress }} || 
-                        data.current_stage !== '{{ project.current_stage }}') {
-                        // If status has changed, reload the page
+                        data.is_running !== {{ project.is_running|tojson }} || 
+                        data.is_complete !== {{ project.is_complete|tojson }}) {
+                        // For major state changes, reload the page
                         window.location.reload();
                     }
+                    
+                    // If manual refresh, re-enable button
+                    if (isManualRefresh && refreshBtn) {
+                        refreshBtn.disabled = false;
+                        refreshBtn.innerHTML = '<i data-feather="refresh-cw" class="me-2"></i> Refresh Status';
+                        feather.replace();
+                    }
                 })
-                .catch(error => console.error('Error fetching status:', error));
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    // If manual refresh, re-enable button
+                    if (isManualRefresh && refreshBtn) {
+                        refreshBtn.disabled = false;
+                        refreshBtn.innerHTML = '<i data-feather="refresh-cw" class="me-2"></i> Refresh Status';
+                        feather.replace();
+                    }
+                });
+        }
+        
+        function updateWorkflowStages(currentStage, completedStages) {
+            const stageElements = document.querySelectorAll('.workflow-stage');
+            stageElements.forEach(el => {
+                const stageId = el.getAttribute('data-stage-id');
+                if (stageId) {
+                    // Reset classes
+                    el.classList.remove('active', 'completed');
+                    
+                    // Clear existing spinner or check icon
+                    const statusContainer = el.querySelector('.float-end');
+                    if (statusContainer) {
+                        statusContainer.innerHTML = '';
+                    }
+                    
+                    // Update click handler and cursor
+                    if (completedStages.includes(stageId) || stageId === currentStage) {
+                        el.setAttribute('onclick', `showStageDetails('${stageId}', '${el.querySelector('.workflow-stage-name').textContent.trim()}')`);
+                        el.style.cursor = 'pointer';
+                    } else {
+                        el.removeAttribute('onclick');
+                        el.style.cursor = 'default';
+                    }
+                    
+                    // Set appropriate class and icon
+                    if (completedStages.includes(stageId)) {
+                        el.classList.add('completed');
+                        if (statusContainer) {
+                            statusContainer.innerHTML = '<i data-feather="check" class="text-success"></i>';
+                        }
+                    } else if (stageId === currentStage) {
+                        el.classList.add('active');
+                        if (statusContainer) {
+                            statusContainer.innerHTML = '<div class="spinner-border spinner-border-sm text-primary" role="status"><span class="visually-hidden">Loading...</span></div>';
+                        }
+                    }
+                }
+            });
+            
+            // Re-initialize Feather icons
+            feather.replace();
         }
         
         // Handle download button
@@ -240,5 +405,126 @@
             });
         }
     });
+    
+    // Function to show stage details in modal
+    function showStageDetails(stageId, stageName) {
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('stageDetailModal'));
+        modal.show();
+        
+        // Update modal title
+        document.getElementById('stageDetailModalLabel').textContent = stageName + ' Details';
+        
+        // Show loading, hide content and error
+        document.getElementById('stageDetailLoading').classList.remove('d-none');
+        document.getElementById('stageDetailContent').classList.add('d-none');
+        document.getElementById('stageDetailError').classList.add('d-none');
+        
+        // Fetch stage details
+        fetch(`/api/project/{{ project.id }}/stage/${stageId}`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to fetch stage details');
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Hide loading, show content
+                document.getElementById('stageDetailLoading').classList.add('d-none');
+                const contentElement = document.getElementById('stageDetailContent');
+                contentElement.classList.remove('d-none');
+                
+                // Format and display data
+                let html = '';
+                
+                if (data.data) {
+                    if (stageId === 'ideation') {
+                        const idea = data.data.selected_idea;
+                        if (idea) {
+                            html += `<h4>${idea.title || 'Selected Idea'}</h4>`;
+                            html += `<p><strong>Genre:</strong> ${idea.genre || 'Not specified'}</p>`;
+                            html += `<p><strong>Summary:</strong> ${idea.plot_summary || 'Not available'}</p>`;
+                            
+                            if (idea.themes && idea.themes.length > 0) {
+                                html += '<p><strong>Themes:</strong> ' + idea.themes.join(', ') + '</p>';
+                            }
+                        }
+                    } else if (stageId === 'character_development') {
+                        const characters = data.data.characters || [];
+                        if (characters.length > 0) {
+                            html += '<h4>Characters</h4>';
+                            characters.forEach(char => {
+                                html += `<div class="card mb-3">
+                                            <div class="card-header d-flex justify-content-between align-items-center">
+                                                <h5 class="mb-0">${char.name || 'Unnamed Character'}</h5>
+                                                <span class="badge bg-secondary">${char.role || 'Unknown Role'}</span>
+                                            </div>
+                                            <div class="card-body">
+                                                <p>${char.brief_description || char.background || 'No description available'}</p>
+                                            </div>
+                                         </div>`;
+                            });
+                        }
+                    } else if (stageId === 'world_building') {
+                        const world = data.data;
+                        html += `<h4>${world.name || 'Story World'}</h4>`;
+                        html += `<p>${world.description || 'No description available'}</p>`;
+                        
+                        if (world.locations && world.locations.length > 0) {
+                            html += '<h5 class="mt-3">Locations</h5>';
+                            world.locations.forEach(loc => {
+                                html += `<div class="mb-2">
+                                            <strong>${loc.name || 'Unnamed Location'}</strong>: 
+                                            ${loc.description || 'No description available'}
+                                         </div>`;
+                            });
+                        }
+                    } else if (stageId === 'research') {
+                        const research = data.data;
+                        
+                        if (research.topics && research.topics.length > 0) {
+                            html += '<h4>Research Topics</h4>';
+                            research.topics.forEach(topic => {
+                                html += `<div class="mb-3">
+                                            <h5>${topic.name || 'Unnamed Topic'}</h5>
+                                            <p>${topic.description || 'No description available'}</p>
+                                         </div>`;
+                            });
+                        }
+                        
+                        if (research.synthesis) {
+                            html += '<h4 class="mt-3">Research Synthesis</h4>';
+                            html += `<p>${research.synthesis.overview || 'No overview available'}</p>`;
+                        }
+                    } else if (stageId === 'outlining') {
+                        const outline = data.data;
+                        
+                        html += `<h4>${outline.title || 'Story Outline'}</h4>`;
+                        
+                        if (outline.chapters && outline.chapters.length > 0) {
+                            html += '<h5 class="mt-3">Chapters</h5>';
+                            outline.chapters.forEach((chapter, index) => {
+                                html += `<div class="mb-3">
+                                            <h6>Chapter ${index + 1}: ${chapter.title || 'Untitled Chapter'}</h6>
+                                            <p>${chapter.summary || 'No summary available'}</p>
+                                         </div>`;
+                            });
+                        }
+                    } else {
+                        html = '<div class="alert alert-info">Detailed information for this stage is not available.</div>';
+                    }
+                } else {
+                    html = '<div class="alert alert-info">No data available for this stage yet.</div>';
+                }
+                
+                contentElement.innerHTML = html;
+            })
+            .catch(error => {
+                console.error('Error fetching stage details:', error);
+                document.getElementById('stageDetailLoading').classList.add('d-none');
+                document.getElementById('stageDetailError').classList.remove('d-none');
+                document.getElementById('stageDetailError').textContent = 'Error loading stage details: ' + error.message;
+            });
+    }
 </script>
 {% endblock %}

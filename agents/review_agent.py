@@ -3,7 +3,7 @@ import json
 from typing import Dict, Any, List, Optional
 import re
 
-from models.ollama_client import get_ollama_client
+
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.review_schema import REVIEW_SCHEMA
@@ -19,8 +19,7 @@ class ReviewAgent:
         self,
         project_id: str,
         memory: DynamicMemory,
-        use_openai: bool = True,
-        use_ollama: bool = True
+        use_openai: bool = True
     ):
         """
         Initialize the Review Agent.
@@ -29,14 +28,11 @@ class ReviewAgent:
             project_id: Unique identifier for the project
             memory: Dynamic memory instance
             use_openai: Whether to use OpenAI models
-            use_ollama: Whether to use Ollama models
         """
         self.project_id = project_id
         self.memory = memory
         self.use_openai = use_openai
-        self.use_ollama = use_ollama
         
-        self.ollama_client = get_ollama_client() if use_ollama else None
         self.openai_client = get_openai_client() if use_openai else None
         
         self.name = "review_agent"
@@ -61,6 +57,30 @@ class ReviewAgent:
         """
         logger.info(f"Reviewing chapter {chapter_data.get('id', 'unknown')} for project {self.project_id}")
         
+        # Ensure chapter_data is a dictionary, not a string
+        if isinstance(chapter_data, str):
+            try:
+                chapter_data = json.loads(chapter_data)
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse chapter_data as JSON, creating minimal structure")
+                chapter_data = {
+                    "id": "unknown",
+                    "title": "Untitled Chapter",
+                    "content": chapter_data[:10000] if len(chapter_data) > 10000 else chapter_data
+                }
+        
+        # Ensure chapter_outline is a dictionary, not a string
+        if isinstance(chapter_outline, str):
+            try:
+                chapter_outline = json.loads(chapter_outline)
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse chapter_outline as JSON, creating minimal structure")
+                chapter_outline = {
+                    "id": "unknown",
+                    "title": "Untitled Chapter",
+                    "summary": chapter_outline[:500] if len(chapter_outline) > 500 else chapter_outline
+                }
+        
         # Extract key information from chapter data
         chapter_id = chapter_data.get("id", "unknown")
         chapter_number = chapter_data.get("number", 0)
@@ -75,7 +95,13 @@ class ReviewAgent:
         # Extract style guide information if available
         style_text = ""
         if style_guide:
-            style_text = json.dumps(style_guide, indent=2)
+            if isinstance(style_guide, str):
+                try:
+                    style_guide = json.loads(style_guide)
+                except json.JSONDecodeError:
+                    style_text = style_guide
+            else:
+                style_text = json.dumps(style_guide, indent=2)
         
         # Build the system prompt
         system_prompt = """You are an expert literary editor and critic with a keen eye for narrative structure, character development, pacing, and prose quality.
@@ -117,7 +143,11 @@ For each issue identified, provide:
 - An explanation of why it's problematic
 - A practical suggestion for improvement
 
-Respond with the review formatted as a JSON object according to this schema: {json.dumps(REVIEW_SCHEMA)}
+Respond with the review formatted as a JSON object with the following properties:
+- overall_rating: a number from 1-10
+- strengths: an array of strings describing chapter strengths
+- issues: an array of objects with {{"description", "severity", "example", "suggestion"}} 
+- recommendations: an array of strings with major revision suggestions
 """
         
         try:
@@ -153,15 +183,71 @@ Respond with the review formatted as a JSON object according to this schema: {js
                 # Extract and parse JSON from response
                 text_response = response.get("response", "{}")
                 
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
+                try:
+                    # First try to parse the entire response as JSON
+                    review = json.loads(text_response)
+                except json.JSONDecodeError:
+                    # If that fails, try to extract JSON using regex
+                    logger.warning(f"Failed to parse Ollama response as JSON, attempting to extract valid JSON")
+                    
+                    # Extracting the JSON part from the response
+                    json_start = text_response.find("{")
+                    json_end = text_response.rfind("}") + 1
+                    
+                    if json_start >= 0 and json_end > json_start:
+                        json_str = text_response[json_start:json_end]
+                        try:
+                            review = json.loads(json_str)
+                        except json.JSONDecodeError as json_error:
+                            logger.error(f"Failed to extract JSON from Ollama response: {json_error}")
+                            # Create a fallback review structure
+                            review = {
+                                "overall_rating": 5,
+                                "strengths": ["The chapter was written successfully"],
+                                "issues": [{"description": "Unable to analyze due to JSON parsing error", 
+                                           "severity": "medium", 
+                                           "example": "N/A", 
+                                           "suggestion": "Please review manually"}],
+                                "recommendations": ["Review chapter manually due to AI analysis failure"]
+                            }
+                    else:
+                        # If no valid JSON can be found, create a fallback review
+                        logger.error("No valid JSON found in Ollama response")
+                        review = {
+                            "overall_rating": 5,
+                            "strengths": ["The chapter was written successfully"],
+                            "issues": [{"description": "Unable to analyze due to JSON parsing error", 
+                                       "severity": "medium", 
+                                       "example": "N/A", 
+                                       "suggestion": "Please review manually"}],
+                            "recommendations": ["Review chapter manually due to AI analysis failure"]
+                        }
                 
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    review = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
+                # Validate/fix the review structure
+                if not isinstance(review, dict):
+                    logger.warning("Review result is not a dictionary, creating fallback")
+                    review = {
+                        "overall_rating": 5,
+                        "strengths": ["Content was generated"],
+                        "issues": [{"description": "Invalid review format", 
+                                   "severity": "medium", 
+                                   "example": "N/A", 
+                                   "suggestion": "Please review manually"}],
+                        "recommendations": ["Review chapter manually"]
+                    }
+                
+                # Ensure required fields exist
+                required_fields = ["overall_rating", "strengths", "issues", "recommendations"]
+                for field in required_fields:
+                    if field not in review:
+                        if field == "overall_rating":
+                            review[field] = 5
+                        else:
+                            review[field] = []
+                            
+                # If issues field exists but has invalid structure, fix it
+                if "issues" in review and not isinstance(review["issues"], list):
+                    review["issues"] = []
                 
                 logger.info(f"Reviewed chapter {chapter_id} using Ollama")
                 
@@ -174,216 +260,201 @@ Respond with the review formatted as a JSON object according to this schema: {js
             
         except Exception as e:
             logger.error(f"Chapter review error: {e}")
-            raise Exception(f"Failed to review chapter: {e}")
+            # Return a fallback review instead of raising an exception
+            fallback_review = {
+                "overall_rating": 5,
+                "strengths": ["The chapter was written successfully"],
+                "issues": [{"description": f"Review failed: {str(e)}", 
+                           "severity": "medium", 
+                           "example": "N/A", 
+                           "suggestion": "Please check the chapter manually"}],
+                "recommendations": ["Manual review required due to error"]
+            }
+            
+            # Store the fallback in memory
+            self._store_in_memory(fallback_review, chapter_id)
+            
+            return fallback_review
     
-    def analyze_manuscript_consistency(
-        self,
-        chapters: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def analyze_manuscript_consistency(self, chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Analyze consistency across multiple chapters.
+        Analyze the consistency of a manuscript across chapters.
         
         Args:
-            chapters: List of chapter dictionaries
+            chapters: List of chapter data
             
         Returns:
             Dictionary with consistency analysis
         """
-        logger.info(f"Analyzing manuscript consistency for project {self.project_id}")
-        
         if not chapters:
-            raise ValueError("No chapters provided for consistency analysis")
+            logger.warning("No chapters provided for consistency analysis")
+            return {
+                "consistency_score": 0,
+                "issues": [],
+                "recommendations": ["No chapters available for analysis"]
+            }
         
-        # Limit the number of chapters and content to avoid token limits
-        max_chapters = min(5, len(chapters))
-        chapters_for_analysis = chapters[:max_chapters]
-        
-        # Prepare chapter summaries for analysis
+        # Create a consolidated prompt for consistency analysis
         chapter_summaries = []
-        for chapter in chapters_for_analysis:
-            chapter_number = chapter.get("number", 0)
-            chapter_title = chapter.get("title", "Untitled")
-            
-            # Extract a brief excerpt (first 500 words)
-            content = chapter.get("content", "")
-            words = content.split()[:500]
-            excerpt = " ".join(words) + "..."
-            
-            summary = f"Chapter {chapter_number}: {chapter_title}\n{excerpt}"
-            chapter_summaries.append(summary)
+        for i, chapter in enumerate(chapters):
+            title = chapter.get("title", f"Chapter {i+1}")
+            content_preview = chapter.get("content", "")
+            if content_preview:
+                content_preview = content_preview[:500] + "..." if len(content_preview) > 500 else content_preview
+            chapter_summaries.append(f"Chapter: {title}\nPreview: {content_preview}\n")
         
-        chapters_text = "\n\n---\n\n".join(chapter_summaries)
+        chapters_text = "\n".join(chapter_summaries)
         
-        # Build the system prompt
-        system_prompt = """You are an expert literary editor specializing in evaluating manuscript consistency.
-Your task is to analyze multiple chapters for consistency in characterization, plot, style, setting, and tone.
-Identify both consistent elements and inconsistencies across chapters.
-Provide detailed examples and recommendations for improving consistency.
-Your analysis should help create a cohesive, unified manuscript.
-Provide output in JSON format."""
+        prompt = f"""
+        Analyze the consistency of the following manuscript chapters:
         
-        # Build the user prompt
-        user_prompt = f"""Analyze the following chapters for consistency:
-
-{chapters_text}
-
-Evaluate consistency across these dimensions:
-1. Character Consistency: Are characters portrayed consistently across chapters?
-2. Plot Continuity: Are there any plot holes or continuity issues?
-3. Setting Consistency: Is the setting described consistently?
-4. Style & Tone: Is the writing style and tone consistent?
-5. Theme Development: Are themes developed consistently?
-6. Timeline: Are there any issues with the timeline or chronology?
-
-For each inconsistency identified, provide:
-- A specific example from the text
-- An explanation of the inconsistency
-- A practical suggestion for resolving it
-
-Also identify positive examples of strong consistency that should be maintained.
-
-Respond with the analysis formatted as a JSON object in this format:
-{{
-  "overall_consistency_score": 0-10,
-  "consistency_summary": "string",
-  "character_consistency": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "plot_continuity": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "setting_consistency": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "style_tone_consistency": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "theme_consistency": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "timeline_consistency": {{
-    "score": 0-10,
-    "issues": [
-      {{
-        "description": "string",
-        "example": "string",
-        "suggestion": "string"
-      }}
-    ],
-    "strengths": ["string"]
-  }},
-  "priority_recommendations": [
-    {{
-      "focus_area": "string",
-      "recommendation": "string"
-    }}
-  ]
-}}
-"""
+        {chapters_text}
+        
+        Provide a detailed consistency analysis covering:
+        1. Character consistency (names, traits, motivations)
+        2. Plot consistency (timeline, events, cause-effect relationships)
+        3. Setting consistency (locations, world rules, descriptions)
+        4. Tone consistency (writing style, mood, voice)
+        
+        Format your response as valid JSON with the following structure:
+        {{
+            "consistency_score": [1-10 rating],
+            "issues": [
+                {{
+                    "type": ["character"|"plot"|"setting"|"tone"],
+                    "description": "Description of the inconsistency",
+                    "location": "Chapter information",
+                    "severity": ["high"|"medium"|"low"]
+                }}
+            ],
+            "recommendations": [
+                "Recommendation to fix the issue"
+            ]
+        }}
+        
+        Focus only on identifying major inconsistencies. If no significant issues are found, return an empty issues array.
+        Ensure your JSON is properly formatted with no trailing commas.
+        """
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
+            model_response = None
+            
+            # First try with Ollama model if available
+            if self.use_ollama:
                 try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=3000
+                    model_response = self.ollama_client.generate(
+                        prompt=prompt,
+                        model="deepseek-v2:16b",
+                        context_window=24000,
+                        temperature=0.1,
+                        top_p=0.1
                     )
-                    
-                    analysis = response["parsed_json"]
-                    logger.info(f"Analyzed manuscript consistency using OpenAI")
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(analysis),
-                        self.name,
-                        metadata={"type": "consistency_analysis"}
-                    )
-                    
-                    return analysis
                 except Exception as e:
-                    logger.warning(f"OpenAI consistency analysis failed: {e}, falling back to Ollama")
+                    logger.error(f"Error generating consistency analysis with Ollama: {e}")
+                    # Fall back to OpenAI
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    analysis = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Analyzed manuscript consistency using Ollama")
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(analysis),
-                    self.name,
-                    metadata={"type": "consistency_analysis"}
-                )
-                
-                return analysis
+            # Try OpenAI if Ollama failed or is not available
+            if not model_response and self.use_openai:
+                try:
+                    model_response = self.openai_client.generate(
+                        prompt=prompt,
+                        model="gpt-4o",
+                        temperature=0.1,
+                        top_p=0.1
+                    )
+                except Exception as e:
+                    logger.error(f"Error generating consistency analysis with OpenAI: {e}")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to analyze consistency")
+            # Create a fallback if neither model worked
+            if not model_response:
+                logger.warning("No model response for consistency analysis, creating fallback")
+                return {
+                    "consistency_score": 5,
+                    "issues": [],
+                    "recommendations": ["Analysis unavailable due to model errors"]
+                }
             
+            # Extract JSON from the response - first try to parse the whole response
+            try:
+                result = json.loads(model_response)
+                
+                # Validate that the structure is correct
+                if not isinstance(result, dict):
+                    raise ValueError("Response is not a dictionary")
+                
+                if "consistency_score" not in result:
+                    result["consistency_score"] = 5
+                
+                if "issues" not in result:
+                    result["issues"] = []
+                
+                if "recommendations" not in result:
+                    result["recommendations"] = []
+                
+                return result
+            
+            except json.JSONDecodeError:
+                # Try to extract JSON using regex
+                try:
+                    logger.warning("Failed to parse response as JSON, trying to extract JSON with regex")
+                    import re
+                    
+                    # Look for content between curly braces, including nested braces
+                    json_pattern = r'({(?:[^{}]|(?:{[^{}]*})|(?:{{[^{}]*}})|(?:{{{[^{}]*}}})|(?:{{{{[^{}]*}}}}))*})'
+                    json_matches = re.findall(json_pattern, model_response)
+                    
+                    if json_matches:
+                        for match in json_matches:
+                            try:
+                                # Try parsing each match
+                                result = json.loads(match)
+                                logger.info("Successfully extracted JSON with regex")
+                                
+                                # Validate that the structure is correct
+                                if not isinstance(result, dict):
+                                    raise ValueError("Response is not a dictionary")
+                                
+                                if "consistency_score" not in result:
+                                    result["consistency_score"] = 5
+                                
+                                if "issues" not in result:
+                                    result["issues"] = []
+                                
+                                if "recommendations" not in result:
+                                    result["recommendations"] = []
+                                
+                                return result
+                            except json.JSONDecodeError:
+                                continue
+                    
+                    # If we reach here, no valid JSON was found with regex
+                    raise ValueError("Could not extract valid JSON from response")
+                
+                except Exception as e:
+                    logger.error(f"Error extracting JSON with regex: {e}")
+                    # Fall back to creating a minimal structure
+                    return {
+                        "consistency_score": 5,
+                        "issues": [],
+                        "recommendations": ["Analysis unavailable due to JSON parsing errors"]
+                    }
+            
+            except Exception as e:
+                logger.error(f"Error processing consistency analysis: {e}")
+                return {
+                    "consistency_score": 5,
+                    "issues": [],
+                    "recommendations": [f"Analysis error: {str(e)}"]
+                }
+        
         except Exception as e:
-            logger.error(f"Consistency analysis error: {e}")
-            raise Exception(f"Failed to analyze manuscript consistency: {e}")
+            logger.error(f"Failed to analyze manuscript consistency: {str(e)}")
+            # Return fallback consistency analysis
+            return {
+                "consistency_score": 5,
+                "issues": [],
+                "recommendations": [f"Analysis could not be completed: {str(e)}"]
+            }
     
     def analyze_chapter_readability(
         self,

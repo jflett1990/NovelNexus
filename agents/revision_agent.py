@@ -2,7 +2,7 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 
-from models.ollama_client import get_ollama_client
+
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 
@@ -17,8 +17,7 @@ class RevisionAgent:
         self,
         project_id: str,
         memory: DynamicMemory,
-        use_openai: bool = True,
-        use_ollama: bool = True
+        use_openai: bool = True
     ):
         """
         Initialize the Revision Agent.
@@ -27,14 +26,11 @@ class RevisionAgent:
             project_id: Unique identifier for the project
             memory: Dynamic memory instance
             use_openai: Whether to use OpenAI models
-            use_ollama: Whether to use Ollama models
         """
         self.project_id = project_id
         self.memory = memory
         self.use_openai = use_openai
-        self.use_ollama = use_ollama
         
-        self.ollama_client = get_ollama_client() if use_ollama else None
         self.openai_client = get_openai_client() if use_openai else None
         
         self.name = "revision_agent"
