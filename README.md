@@ -53,4 +53,4 @@ All agents are connected through a central hub and dynamic memory system to main
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.# NovelNexus
