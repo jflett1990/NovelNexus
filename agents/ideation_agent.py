@@ -8,6 +8,7 @@ from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.ideation_schema import IDEATION_SCHEMA
 from utils.model_utils import select_model
+from utils.validation_utils import validate_ideas
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +99,19 @@ Provide output in JSON format according to the provided schema."""
                         agent_name=self.name
                     )
                     
-                    ideas = response["parsed_json"]
-                    logger.info(f"Generated {len(ideas.get('ideas', []))} ideas using OpenAI for project {self.project_id}")
+                    raw_ideas = response["parsed_json"]
+                    
+                    # Validate and fix ideas using our validation utility
+                    validated_ideas = validate_ideas(raw_ideas)
+                    
+                    logger.info(f"Generated {len(validated_ideas.get('ideas', []))} ideas using OpenAI for project {self.project_id}")
                     
                     # Store in memory
-                    logger.debug(f"Storing OpenAI generated ideas in memory for project {self.project_id}")
-                    self._store_in_memory(ideas)
+                    logger.debug(f"Storing validated ideas in memory for project {self.project_id}")
+                    self._store_in_memory(validated_ideas)
                     logger.info(f"Successfully stored ideas in memory for project {self.project_id}")
                     
-                    return ideas
+                    return validated_ideas
                 except Exception as e:
                     logger.warning(f"OpenAI ideation failed: {e}")
                     raise Exception(f"Failed to generate ideas: {e}")
@@ -164,7 +169,15 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
                         agent_name=self.name
                     )
                     
-                    refined_idea = response["parsed_json"]
+                    raw_refined_idea = response["parsed_json"]
+                    
+                    # Wrap the single idea in a structure for validation
+                    idea_wrapper = {"ideas": [raw_refined_idea]}
+                    validated_wrapper = validate_ideas(idea_wrapper)
+                    
+                    # Extract the validated idea
+                    refined_idea = validated_wrapper["ideas"][0] if validated_wrapper["ideas"] else {}
+                    
                     logger.info(f"Refined idea {idea_id} using OpenAI")
                     
                     # Update the idea ID if it changed
@@ -200,17 +213,37 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
             logger.warning(f"No ideas to store for project {self.project_id}")
             return
         
-        # Store each idea separately
-        for idea in ideas['ideas']:
-            idea_id = idea.get('id', str(uuid.uuid4()))
-            if 'id' not in idea:
-                idea['id'] = idea_id
-            
+        try:
+            # Store the full ideas collection
+            ideas_json = json.dumps(ideas)
             self.memory.add_document(
-                json.dumps(idea),
+                ideas_json,
                 self.name,
-                metadata={"type": "idea", "idea_id": idea_id}
+                metadata={"type": "ideas_collection"}
             )
+            
+            # Store each individual idea
+            for idea in ideas['ideas']:
+                # Ensure each idea has an ID
+                if 'id' not in idea or not idea['id']:
+                    idea['id'] = str(uuid.uuid4())
+                
+                idea_json = json.dumps(idea)
+                self.memory.add_document(
+                    idea_json,
+                    self.name,
+                    metadata={
+                        "type": "idea", 
+                        "idea_id": idea['id'],
+                        "title": idea.get('title', 'Untitled'),
+                        "score": idea.get('score', 0)
+                    }
+                )
+                
+            logger.debug(f"Stored {len(ideas['ideas'])} ideas in memory for project {self.project_id}")
+        except Exception as e:
+            logger.error(f"Error storing ideas in memory: {e}")
+            raise
     
     def get_best_idea(self) -> Dict[str, Any]:
         """

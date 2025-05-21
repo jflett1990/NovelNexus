@@ -35,7 +35,7 @@ class ChapterWriterAgent:
         
         self.name = "chapter_writer_agent"
         self.stage = "chapter_writing"
-        self.model_name = "deepseek-v2:16b"
+        self.model_name = "gpt-4o"
         logger.info(f"Initialized chapter writer agent with model {self.model_name}")
     
     def write_chapter(self, chapter_plan: Dict[str, Any], previous_chapter_content: Optional[str] = None) -> Dict[str, Any]:
@@ -49,6 +49,31 @@ class ChapterWriterAgent:
         Returns:
             Dictionary with chapter content and metadata
         """
+        # Handle empty or invalid chapter plan
+        if not chapter_plan or not isinstance(chapter_plan, dict):
+            logger.warning("Received empty or invalid chapter plan, using fallback chapter")
+            chapter_number = 1
+            chapter_title = "Chapter 1"
+            chapter_summary = "Introduction to the story and characters"
+            
+            # Create fallback chapter content
+            fallback_content = self._create_fallback_chapter_content(
+                chapter_number=chapter_number,
+                chapter_title=chapter_title,
+                chapter_summary=chapter_summary
+            )
+            
+            fallback_chapter = {
+                "number": chapter_number,
+                "title": chapter_title,
+                "summary": chapter_summary,
+                "content": fallback_content,
+                "word_count": len(fallback_content.split()),
+                "is_fallback": True
+            }
+            
+            return fallback_chapter
+        
         chapter_number = chapter_plan.get("number", 1)
         chapter_title = chapter_plan.get("title", f"Chapter {chapter_number}")
         chapter_summary = chapter_plan.get("summary", "")
@@ -67,8 +92,13 @@ class ChapterWriterAgent:
         # Prepare character summaries - simplified for prompt length
         character_summaries = []
         for character in characters[:5]:  # Limit to top 5 characters
-            summary = f"{character.get('name', 'Unknown')}: {character.get('role', 'character')} - "
-            summary += character.get('personality', '') + " " + character.get('motivation', '')
+            if not isinstance(character, dict):
+                continue
+            name = character.get('name', 'Unknown')
+            role = character.get('role', 'character')
+            personality = character.get('personality', '')
+            motivation = character.get('motivation', '')
+            summary = f"{name}: {role} - {personality} {motivation}"
             character_summaries.append(summary)
         
         # Generate prompt
@@ -102,13 +132,18 @@ class ChapterWriterAgent:
                         total_segments=segment_count
                     )
                 
-                response = self.ollama_client.generate(
+                response = self.openai_client.generate(
                     prompt=segment_prompt,
                     model=self.model_name
                 )
                 
+                # Handle empty response
+                if not response or not response.get("content"):
+                    logger.warning(f"Empty response from OpenAI for chapter {chapter_number}, segment {segment}")
+                    continue
+                
                 # Clean up response - remove any JSON formatting that might be included
-                clean_response = self._clean_chapter_content(response.get("response", ""))
+                clean_response = self._clean_chapter_content(response.get("content", ""))
                 
                 # Add to full content
                 full_content += clean_response
@@ -116,6 +151,15 @@ class ChapterWriterAgent:
                 # If this isn't the last segment, add a section break
                 if segment < segment_count:
                     full_content += "\n\n* * *\n\n"
+            
+            # If we didn't get any content, use fallback
+            if not full_content:
+                logger.warning(f"Failed to generate content for chapter {chapter_number}, using fallback")
+                full_content = self._create_fallback_chapter_content(
+                    chapter_number=chapter_number,
+                    chapter_title=chapter_title,
+                    chapter_summary=chapter_summary
+                )
             
             # Create chapter data structure
             chapter_data = {

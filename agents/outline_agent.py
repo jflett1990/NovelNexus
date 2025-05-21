@@ -417,138 +417,77 @@ Respond with the outline formatted according to this JSON schema: {json.dumps(OU
         revision_instructions: str
     ) -> Dict[str, Any]:
         """
-        Revise a specific chapter in the outline.
+        Revise a specific chapter in the outline based on instructions.
         
         Args:
             chapter_id: ID of the chapter to revise
             revision_instructions: Instructions for the revision
             
         Returns:
-            Dictionary with the revised chapter
+            Dictionary with the updated chapter
         """
-        # Get the original outline
-        outline_docs = self.memory.get_agent_memory(self.name)
+        logger.info(f"Revising chapter {chapter_id} with instructions: {revision_instructions}")
         
-        original_outline = None
-        original_chapter = None
+        # Get the current outline
+        outline = self.get_complete_outline()
         
-        for doc in outline_docs:
-            metadata = doc.get('metadata', {})
-            
-            if metadata.get('type') == 'outline':
-                try:
-                    outline_data = json.loads(doc['text'])
-                    original_outline = outline_data
-                    
-                    # Find the chapter
-                    if 'chapters' in outline_data:
-                        for chapter in outline_data['chapters']:
-                            if chapter.get('id') == chapter_id:
-                                original_chapter = chapter
-                                break
-                    
-                    if original_chapter:
-                        break
-                except json.JSONDecodeError:
-                    continue
+        # Find the chapter
+        chapter_to_revise = None
+        for chapter in outline.get("chapters", []):
+            if str(chapter.get("id", "")) == str(chapter_id):
+                chapter_to_revise = chapter
+                break
         
-        if not original_outline or not original_chapter:
-            raise ValueError(f"Chapter with ID {chapter_id} not found in outline")
+        if not chapter_to_revise:
+            logger.error(f"Chapter {chapter_id} not found in outline")
+            return {"error": f"Chapter {chapter_id} not found"}
         
         # Build the system prompt
-        system_prompt = """You are an expert book outliner and story structure specialist.
-Your task is to revise a specific chapter in a book outline based on provided instructions.
-Maintain consistency with the overall book structure while implementing the requested changes.
+        system_prompt = """You are an expert book outliner and editor.
+Your task is to revise a chapter outline according to the provided instructions.
+The revised chapter should maintain consistency with the overall book structure.
 Provide output in JSON format."""
         
         # Build the user prompt
-        user_prompt = f"""Revise the following chapter in a book outline based on these instructions: {revision_instructions}
+        user_prompt = f"""Revise the following chapter outline according to these instructions:
 
-Original Chapter:
-{json.dumps(original_chapter, indent=2)}
+{revision_instructions}
 
-Context from Overall Outline:
-Title: {original_outline.get('title', '')}
-Genre: {original_outline.get('genre', '')}
-Structure: {original_outline.get('structure', {}).get('description', '')}
+Current chapter outline:
+{json.dumps(chapter_to_revise, indent=2)}
 
-Revise the chapter to address the instructions while maintaining consistency with the book's overall structure, themes, and character arcs.
-Make the chapter stronger, more cohesive, and better aligned with the book's goals.
-
-Respond with the revised chapter formatted as a JSON object matching the structure of the original chapter.
+Respond with the revised chapter as a valid JSON object that maintains the same structure as the original.
+Include all the original fields (id, title, etc.) but with updated content according to the instructions.
 """
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=2500
-                    )
-                    
-                    revised_chapter = response["parsed_json"]
-                    logger.info(f"Revised chapter {chapter_id} using OpenAI")
-                    
-                    # Update the chapter ID if it changed
-                    if "id" in revised_chapter and revised_chapter["id"] != chapter_id:
-                        revised_chapter["id"] = chapter_id
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(revised_chapter),
-                        self.name,
-                        metadata={"type": "revised_chapter", "chapter_id": chapter_id}
-                    )
-                    
-                    return revised_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter revision failed: {e}, falling back to Ollama")
+            # Revise the chapter
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    revised_chapter = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Revised chapter {chapter_id} using Ollama")
-                
-                # Update the chapter ID if it changed
-                if "id" in revised_chapter and revised_chapter["id"] != chapter_id:
-                    revised_chapter["id"] = chapter_id
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(revised_chapter),
-                    self.name,
-                    metadata={"type": "revised_chapter", "chapter_id": chapter_id}
-                )
-                
-                return revised_chapter
+            updated_chapter = response["parsed_json"]
+            logger.info(f"Revised chapter {chapter_id} using OpenAI")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to revise chapter")
+            # Update the chapter in the outline
+            for i, chapter in enumerate(outline.get("chapters", [])):
+                if str(chapter.get("id", "")) == str(chapter_id):
+                    outline["chapters"][i] = updated_chapter
+                    break
+            
+            # Store updated outline in memory
+            self._store_in_memory(outline)
+            
+            return updated_chapter
             
         except Exception as e:
-            logger.error(f"Chapter revision error: {e}")
-            raise Exception(f"Failed to revise chapter: {e}")
+            logger.error(f"Error revising chapter {chapter_id}: {str(e)}")
+            return {
+                "error": f"Failed to revise chapter: {str(e)}",
+                "original_chapter": chapter_to_revise
+            }
     
     def add_chapter_details(
         self,
@@ -561,146 +500,79 @@ Respond with the revised chapter formatted as a JSON object matching the structu
         
         Args:
             chapter_id: ID of the chapter to enhance
-            detail_type: Type of details to add (e.g., 'scenes', 'character_development', 'setting')
-            detail_instructions: Instructions for adding details
+            detail_type: Type of details to add (e.g., "scenes", "character_arcs")
+            detail_instructions: Instructions for the details to add
             
         Returns:
-            Dictionary with the enhanced chapter
+            Dictionary with the updated chapter
         """
-        # Get the original chapter
-        chapter_docs = self.memory.query_memory(f"chapter_id:{chapter_id}", agent_name=self.name)
+        logger.info(f"Adding {detail_type} details to chapter {chapter_id}")
         
-        # If no specific chapter, get from the outline
-        if not chapter_docs:
-            outline_docs = self.memory.get_agent_memory(self.name)
-            
-            for doc in outline_docs:
-                metadata = doc.get('metadata', {})
-                
-                if metadata.get('type') == 'outline':
-                    try:
-                        outline_data = json.loads(doc['text'])
-                        
-                        # Find the chapter
-                        if 'chapters' in outline_data:
-                            for chapter in outline_data['chapters']:
-                                if chapter.get('id') == chapter_id:
-                                    # Found the chapter, create a memory doc for it
-                                    self.memory.add_document(
-                                        json.dumps(chapter),
-                                        self.name,
-                                        metadata={"type": "chapter", "chapter_id": chapter_id}
-                                    )
-                                    
-                                    chapter_docs = [{"text": json.dumps(chapter)}]
-                                    break
-                    except json.JSONDecodeError:
-                        continue
+        # Get the current outline
+        outline = self.get_complete_outline()
         
-        if not chapter_docs:
-            raise ValueError(f"Chapter with ID {chapter_id} not found")
+        # Find the chapter
+        chapter_to_enhance = None
+        for chapter in outline.get("chapters", []):
+            if str(chapter.get("id", "")) == str(chapter_id):
+                chapter_to_enhance = chapter
+                break
         
-        original_chapter_text = chapter_docs[0]['text']
-        
-        try:
-            original_chapter = json.loads(original_chapter_text)
-        except json.JSONDecodeError:
-            raise ValueError(f"Invalid chapter data for ID {chapter_id}")
+        if not chapter_to_enhance:
+            logger.error(f"Chapter {chapter_id} not found in outline")
+            return {"error": f"Chapter {chapter_id} not found"}
         
         # Build the system prompt
-        system_prompt = f"""You are an expert book outliner specializing in adding detailed {detail_type} to chapter outlines.
-Your task is to enhance a chapter outline by adding rich, specific {detail_type} details that improve the narrative quality.
-Maintain consistency with the existing chapter while adding depth and clarity.
+        system_prompt = """You are an expert book outliner and editor.
+Your task is to add specific details to a chapter outline according to the provided instructions.
+The enhanced chapter should maintain consistency with the overall book structure.
 Provide output in JSON format."""
         
         # Build the user prompt
-        user_prompt = f"""Enhance the following chapter outline by adding detailed {detail_type} based on these instructions: {detail_instructions}
+        user_prompt = f"""Add {detail_type} details to the following chapter outline according to these instructions:
 
-Original Chapter:
-{original_chapter_text}
+{detail_instructions}
 
-Add rich {detail_type} details to this chapter that:
-1. Enhance the narrative flow and pacing
-2. Develop the characters and their arcs
-3. Create vivid settings and atmosphere
-4. Strengthen the themes and motifs
-5. Maintain consistency with the existing chapter elements
+Current chapter outline:
+{json.dumps(chapter_to_enhance, indent=2)}
 
-Respond with the enhanced chapter formatted as a JSON object matching the structure of the original chapter,
-but with additional {detail_type} details incorporated.
+Full book outline context (summary):
+Title: {outline.get("title", "Untitled")}
+Genre: {outline.get("genre", "Unknown")}
+Overall Structure: {outline.get("structure", {}).get("overview", "Standard structure")}
+
+Respond with the enhanced chapter as a valid JSON object that maintains the same structure as the original,
+but with additional details for the {detail_type} aspect.
 """
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=2500
-                    )
-                    
-                    enhanced_chapter = response["parsed_json"]
-                    logger.info(f"Added {detail_type} details to chapter {chapter_id} using OpenAI")
-                    
-                    # Update the chapter ID if it changed
-                    if "id" in enhanced_chapter and enhanced_chapter["id"] != chapter_id:
-                        enhanced_chapter["id"] = chapter_id
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(enhanced_chapter),
-                        self.name,
-                        metadata={"type": "enhanced_chapter", "chapter_id": chapter_id, "detail_type": detail_type}
-                    )
-                    
-                    return enhanced_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter enhancement failed: {e}, falling back to Ollama")
+            # Add the details
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    enhanced_chapter = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Added {detail_type} details to chapter {chapter_id} using Ollama")
-                
-                # Update the chapter ID if it changed
-                if "id" in enhanced_chapter and enhanced_chapter["id"] != chapter_id:
-                    enhanced_chapter["id"] = chapter_id
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(enhanced_chapter),
-                    self.name,
-                    metadata={"type": "enhanced_chapter", "chapter_id": chapter_id, "detail_type": detail_type}
-                )
-                
-                return enhanced_chapter
+            updated_chapter = response["parsed_json"]
+            logger.info(f"Added {detail_type} details to chapter {chapter_id} using OpenAI")
             
-            raise Exception(f"No available AI service (OpenAI or Ollama) to add {detail_type} details")
+            # Update the chapter in the outline
+            for i, chapter in enumerate(outline.get("chapters", [])):
+                if str(chapter.get("id", "")) == str(chapter_id):
+                    outline["chapters"][i] = updated_chapter
+                    break
+            
+            # Store updated outline in memory
+            self._store_in_memory(outline)
+            
+            return updated_chapter
             
         except Exception as e:
-            logger.error(f"Chapter enhancement error: {e}")
-            raise Exception(f"Failed to add {detail_type} details to chapter: {e}")
+            logger.error(f"Error adding {detail_type} details to chapter {chapter_id}: {str(e)}")
+            return {
+                "error": f"Failed to add {detail_type} details: {str(e)}",
+                "original_chapter": chapter_to_enhance
+            }
     
     def _store_in_memory(self, outline: Dict[str, Any]) -> None:
         """

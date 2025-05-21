@@ -1,6 +1,7 @@
 import logging
 import json
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 
 from models.openai_client import get_openai_client
@@ -25,7 +26,7 @@ class EditorialAgent:
         Args:
             project_id: Unique identifier for the project
             memory: Dynamic memory instance
-            use_openai: Whether to use OpenAI models
+            use_openai: Whether to use OpenAI API
         """
         self.project_id = project_id
         self.memory = memory
@@ -89,7 +90,7 @@ Provide the complete edited text, ready for publication."""
 - Appropriate paragraph breaks
 - Dialogue formatting and punctuation"""
         
-        # Build user prompt in parts to avoid f-string backslash issues
+        # Build user prompt
         user_prompt = f"Edit Chapter {chapter_number}: {chapter_title} for publication:\n\n"
         user_prompt += f"{edit_instructions}\n\n"
         
@@ -101,62 +102,35 @@ Provide the complete edited text, ready for publication."""
         user_prompt += "Your edits should be professional and subtle, focusing on making the text ready for publication."
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        temperature=0.4,  # Lower temperature for more precise editing
-                        max_tokens=4000
-                    )
-                    
-                    edited_content = response["text"]
-                    logger.info(f"Edited chapter {chapter_id} using OpenAI")
-                    
-                    # Create the edited chapter
-                    edited_chapter = chapter_data.copy()
-                    edited_chapter["content"] = edited_content
-                    edited_chapter["word_count"] = len(edited_content.split())
-                    edited_chapter["edit_notes"] = {
-                        "edit_date": self.memory.metadata.get('timestamp', ''),
-                        "edits_performed": edits_requested or ["comprehensive_edit"]
-                    }
-                    
-                    self._store_in_memory(edited_chapter)
-                    
-                    return edited_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter editing failed: {e}, falling back to Ollama")
+            # Generate edited content
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model="gpt-4o",
+                temperature=0.4  # Lower temperature for more precise editing
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt
-                )
-                
-                edited_content = response.get("response", "")
-                logger.info(f"Edited chapter {chapter_id} using Ollama")
-                
-                # Create the edited chapter
-                edited_chapter = chapter_data.copy()
-                edited_chapter["content"] = edited_content
-                edited_chapter["word_count"] = len(edited_content.split())
-                edited_chapter["edit_notes"] = {
-                    "edit_date": self.memory.metadata.get('timestamp', ''),
-                    "edits_performed": edits_requested or ["comprehensive_edit"]
-                }
-                
-                self._store_in_memory(edited_chapter)
-                
-                return edited_chapter
+            edited_content = response.get("content", "")
+            logger.info(f"Edited chapter {chapter_id} using OpenAI")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to edit chapter")
+            # Create the edited chapter
+            edited_chapter = chapter_data.copy()
+            edited_chapter["content"] = edited_content
+            edited_chapter["word_count"] = len(edited_content.split())
+            edited_chapter["edit_notes"] = {
+                "edit_date": datetime.now().isoformat(),
+                "edits_performed": edits_requested or ["comprehensive_edit"]
+            }
+            
+            self._store_in_memory(edited_chapter)
+            
+            return edited_chapter
             
         except Exception as e:
-            logger.error(f"Chapter editing error: {e}")
-            raise Exception(f"Failed to edit chapter: {e}")
+            logger.error(f"Error editing chapter: {str(e)}")
+            # Return original chapter with error info
+            chapter_data["edit_error"] = str(e)
+            return chapter_data
     
     def create_front_matter(
         self,
@@ -164,252 +138,151 @@ Provide the complete edited text, ready for publication."""
         outline: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Create front matter for the book (title page, TOC, etc.).
+        Create front matter for the book, including title page, copyright, dedication, etc.
         
         Args:
             book_info: Dictionary with book information
             outline: Optional outline of the book
             
         Returns:
-            Dictionary with the front matter
+            Dictionary with generated front matter
         """
         logger.info(f"Creating front matter for project {self.project_id}")
         
         # Extract key information
-        title = book_info.get("title", "Untitled Book")
-        author = book_info.get("author", "Unknown Author")
+        title = book_info.get("title", "")
         genre = book_info.get("genre", "")
+        author = book_info.get("author", "Anonymous")
+        
+        # Get the current year for copyright
+        current_year = datetime.now().year
         
         # Build the system prompt
-        system_prompt = """You are an expert book designer specializing in creating professional front matter for books.
-Your task is to create comprehensive front matter including title page, copyright page, table of contents, and dedication.
-The front matter should be professionally formatted and ready for publication.
-Provide output in JSON format with each element of the front matter as a separate section."""
-        
-        # Prepare chapter information for table of contents
-        toc_info = ""
-        if outline and "chapters" in outline:
-            chapters = outline["chapters"]
-            chapter_list = []
-            for chapter in chapters:
-                number = chapter.get("number", 0)
-                title = chapter.get("title", "Untitled Chapter")
-                chapter_list.append(f"Chapter {number}: {title}")
-            
-            toc_info = "\n".join(chapter_list)
+        system_prompt = """You are an expert literary editor specializing in creating professional front matter for books.
+Your task is to create all the standard front matter elements for a book, including title page, 
+copyright notice, dedication, table of contents, and any other appropriate elements.
+The front matter should be professional, complete, and appropriate for the book's genre and style.
+Provide output in JSON format according to the specified schema."""
         
         # Build the user prompt
-        # Build the user prompt in parts to avoid f-string backslash issues
-        user_prompt = f"Create professional front matter for the following book:\n\n"
-        user_prompt += f"Title: {title}\n"
-        user_prompt += f"Author: {author}\n"
-        user_prompt += f"Genre: {genre}\n\n"
-        
-        if toc_info:
-            user_prompt += f"Chapters for Table of Contents:\n{toc_info}\n\n"
-            
-        user_prompt += "Create the following front matter elements:\n"
-        user_prompt += "1. Title Page\n"
-        user_prompt += "2. Copyright Page\n"
-        user_prompt += "3. Dedication Page\n"
-        user_prompt += "4. Table of Contents\n"
-        user_prompt += "5. Epigraph (optional)\n\n"
-        user_prompt += "Make the front matter professional, properly formatted, and ready for publication.\n"
-        user_prompt += "Use appropriate placeholder text where necessary (e.g., for copyright information, ISBN, etc.)\n\n"
-        
-        user_prompt += "Respond with the front matter formatted as a JSON object in this format:\n"
-        user_prompt += "{\n"
-        user_prompt += '  "title_page": {\n'
-        user_prompt += '    "title": "string",\n'
-        user_prompt += '    "subtitle": "string (if applicable)",\n'
-        user_prompt += '    "author": "string",\n'
-        user_prompt += '    "publisher": "string (if applicable)"\n'
-        user_prompt += "  },\n"
-        user_prompt += '  "copyright_page": "string (full formatted text)",\n'
-        user_prompt += '  "dedication_page": "string (full formatted text)",\n'
-        user_prompt += '  "epigraph": "string (full formatted text, if applicable)",\n'
-        user_prompt += '  "table_of_contents": [\n'
-        user_prompt += "    {\n"
-        user_prompt += '      "title": "string",\n'
-        user_prompt += '      "page": "string (if applicable)"\n'
-        user_prompt += "    }\n"
-        user_prompt += "  ]\n"
-        user_prompt += "}"
+        user_prompt = f"""Create complete front matter for a book with the following details:
+
+Title: {title}
+Genre: {genre}
+Author: {author}
+Year: {current_year}
+
+Include these standard front matter elements:
+1. Title page
+2. Copyright page
+3. Dedication (create an appropriate placeholder)
+4. Table of contents (use chapter titles from outline if available, or create generic chapter titles)
+5. Epigraph (create an appropriate quote related to the book's theme or genre)
+6. Author's note (create a brief placeholder)
+
+Format the response as a JSON object with these fields:
+- title_page: Text for the title page
+- copyright_page: Full copyright text
+- dedication: Dedication text
+- table_of_contents: Table of contents as text
+- epigraph: Epigraph text and attribution
+- authors_note: Brief author's note text
+- other_elements: Array of any other elements you think should be included
+
+Be creative but professional, and make all elements appropriate for the book's genre.
+"""
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=2500
-                    )
-                    
-                    front_matter = response["parsed_json"]
-                    logger.info(f"Created front matter using OpenAI")
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(front_matter),
-                        self.name,
-                        metadata={"type": "front_matter"}
-                    )
-                    
-                    return front_matter
-                except Exception as e:
-                    logger.warning(f"OpenAI front matter creation failed: {e}, falling back to Ollama")
+            # Generate front matter
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+                model="gpt-4o"
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    front_matter = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Created front matter using Ollama")
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(front_matter),
-                    self.name,
-                    metadata={"type": "front_matter"}
-                )
-                
-                return front_matter
+            front_matter = response["parsed_json"]
+            logger.info(f"Created front matter for project {self.project_id} using OpenAI")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to create front matter")
+            # Store in memory
+            self.memory.add_document(
+                json.dumps(front_matter),
+                self.name,
+                metadata={"type": "front_matter"}
+            )
+            
+            return front_matter
             
         except Exception as e:
-            logger.error(f"Front matter creation error: {e}")
-            raise Exception(f"Failed to create front matter: {e}")
+            logger.error(f"Error creating front matter: {str(e)}")
+            # Generate fallback front matter
+            fallback_front_matter = self._generate_fallback_front_matter(book_info)
+            self.memory.add_document(
+                json.dumps(fallback_front_matter),
+                self.name,
+                metadata={"type": "front_matter", "is_fallback": True}
+            )
+            return fallback_front_matter
     
     def create_back_matter(
         self,
         book_info: Dict[str, Any],
-        characters: Optional[List[Dict[str, Any]]] = None,
-        world_data: Optional[Dict[str, Any]] = None
+        outline: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Create back matter for the book (glossary, character list, etc.).
+        Create back matter for the book, including author bio, acknowledgments, etc.
         
         Args:
             book_info: Dictionary with book information
-            characters: Optional list of character dictionaries
-            world_data: Optional world building data
+            outline: Optional outline of the book
             
         Returns:
-            Dictionary with the back matter
+            Dictionary with generated back matter
         """
         logger.info(f"Creating back matter for project {self.project_id}")
         
         # Extract key information
-        title = book_info.get("title", "Untitled Book")
-        author = book_info.get("author", "Unknown Author")
+        title = book_info.get("title", "")
         genre = book_info.get("genre", "")
-        
-        # Prepare character information
-        character_info = ""
-        if characters:
-            char_list = []
-            for char in characters:
-                name = char.get("name", "Unknown")
-                desc = char.get("brief_description", "")
-                char_list.append(f"{name}: {desc}")
-            
-            character_info = "\n".join(char_list)
-        
-        # Prepare world information
-        world_info = ""
-        if world_data:
-            world_type = world_data.get("world_type", "")
-            setting = world_data.get("primary_setting", "")
-            time_period = world_data.get("time_period", "")
-            
-            world_info = f"World Type: {world_type}\nPrimary Setting: {setting}\nTime Period: {time_period}"
-            
-            # Add locations if available
-            if "locations" in world_data:
-                locations = world_data["locations"]
-                loc_list = []
-                for loc in locations:
-                    name = loc.get("name", "Unknown")
-                    desc = loc.get("description", "")
-                    loc_list.append(f"{name}: {desc}")
-                
-                world_info += "\n\nLocations:\n" + "\n".join(loc_list)
+        author = book_info.get("author", "Anonymous")
         
         # Build the system prompt
-        system_prompt = """You are an expert book designer specializing in creating professional back matter for books.
-Your task is to create comprehensive back matter including an about the author section, glossary, character list, and appendices as appropriate.
-The back matter should be professionally formatted and ready for publication.
-Provide output in JSON format with each element of the back matter as a separate section."""
+        system_prompt = """You are an expert literary editor specializing in creating professional back matter for books.
+Your task is to create standard back matter elements for a book, including acknowledgments, 
+author biography, and other appropriate elements.
+The back matter should be professional and appropriate for the book's genre and style.
+Provide output in JSON format according to the specified schema."""
         
         # Build the user prompt
-        # Build user prompt in parts to avoid f-string backslash issues
-        user_prompt = f"Create professional back matter for the following book:\n\n"
-        user_prompt += f"Title: {title}\n"
-        user_prompt += f"Author: {author}\n"
-        user_prompt += f"Genre: {genre}\n\n"
-        
-        if character_info:
-            user_prompt += f"Characters:\n{character_info}\n\n"
-            
-        if world_info:
-            user_prompt += f"World Information:\n{world_info}\n\n"
-            
-        user_prompt += "Create the following back matter elements as appropriate for this book:\n"
-        user_prompt += "1. About the Author\n"
-        user_prompt += "2. Glossary of Terms\n"
-        user_prompt += "3. Character List\n"
-        user_prompt += "4. Map/World Description\n"
-        user_prompt += "5. Appendices (if needed)\n\n"
-        
-        user_prompt += "Make the back matter professional, properly formatted, and ready for publication.\n"
-        user_prompt += "Use appropriate placeholder text where necessary (e.g., for author biography).\n\n"
-        
-        user_prompt += "Respond with the back matter formatted as a JSON object in this format:\n"
-        user_prompt += "{\n"
-        user_prompt += '  "about_the_author": "string (full formatted text)",\n'
-        user_prompt += '  "glossary": [\n'
-        user_prompt += "    {\n"
-        user_prompt += '      "term": "string",\n'
-        user_prompt += '      "definition": "string"\n'
-        user_prompt += "    }\n"
-        user_prompt += "  ],\n"
-        user_prompt += '  "character_list": [\n'
-        user_prompt += "    {\n"
-        user_prompt += '      "name": "string",\n'
-        user_prompt += '      "description": "string"\n'
-        user_prompt += "    }\n"
-        user_prompt += "  ],\n"
-        user_prompt += '  "world_description": "string (full formatted text)",\n'
-        user_prompt += '  "appendices": [\n'
-        user_prompt += "    {\n"
-        user_prompt += '      "title": "string",\n'
-        user_prompt += '      "content": "string"\n'
-        user_prompt += "    }\n"
-        user_prompt += "  ]\n"
-        user_prompt += "}"
+        user_prompt = f"""Create complete back matter for a book with the following details:
+
+Title: {title}
+Genre: {genre}
+Author: {author}
+
+Include the following standard back matter elements:
+1. About the Author page with a generic biography
+2. Acknowledgments page with generic acknowledgments
+3. Any other back matter typically included in a {genre} book
+
+Format the back matter professionally, using proper spacing and layout conventions.
+The elements should be ready to insert into a manuscript without further formatting.
+
+Respond with the back matter elements in this JSON format:
+{{
+  "about_author": "Text content for the about the author page",
+  "acknowledgments": "Text content for the acknowledgments page",
+  "other_back_matter": [
+    {{
+      "name": "Name of additional back matter element",
+      "content": "Text content for that element"
+    }}
+  ]
+}}
+"""
         
         try:
-            # Try OpenAI first if enabled
+            # Try OpenAI if enabled
             if self.use_openai and self.openai_client:
                 try:
                     response = self.openai_client.generate(
@@ -417,10 +290,10 @@ Provide output in JSON format with each element of the back matter as a separate
                         system_prompt=system_prompt,
                         json_mode=True,
                         temperature=0.7,
-                        max_tokens=3000
+                        max_tokens=1500
                     )
                     
-                    back_matter = response["parsed_json"]
+                    back_matter = response.get("parsed_json", {})
                     logger.info(f"Created back matter using OpenAI")
                     
                     # Store in memory
@@ -432,41 +305,10 @@ Provide output in JSON format with each element of the back matter as a separate
                     
                     return back_matter
                 except Exception as e:
-                    logger.warning(f"OpenAI back matter creation failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI back matter creation failed: {e}, using fallback")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    back_matter = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Created back matter using Ollama")
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(back_matter),
-                    self.name,
-                    metadata={"type": "back_matter"}
-                )
-                
-                return back_matter
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to create back matter")
+            # If OpenAI is not enabled or failed, use fallback
+            return self._generate_fallback_back_matter(book_info)
             
         except Exception as e:
             logger.error(f"Back matter creation error: {e}")
@@ -595,3 +437,47 @@ Provide output in JSON format with each element of the back matter as a separate
         chapters.sort(key=lambda x: x.get("number", 0))
         
         return chapters
+
+    def _generate_fallback_front_matter(self, book_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate fallback front matter when API calls fail."""
+        title = book_info.get("title", "Untitled")
+        author = book_info.get("author", "Anonymous")
+        current_year = datetime.now().year
+        
+        front_matter = {
+            "title_page": f"{title}\n\nBy {author}",
+            "copyright_page": f"Copyright © {current_year} by {author}\nAll rights reserved.",
+            "dedication_page": "To the readers who bring these words to life.",
+            "table_of_contents": "Table of Contents\n\n[Generated upon final manuscript assembly]",
+            "other_front_matter": []
+        }
+        
+        # Store in memory
+        self.memory.add_document(
+            json.dumps(front_matter),
+            self.name,
+            metadata={"type": "front_matter"}
+        )
+        
+        logger.info(f"Created fallback front matter")
+        return front_matter
+
+    def _generate_fallback_back_matter(self, book_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate fallback back matter when API calls fail."""
+        author = book_info.get("author", "Anonymous")
+        
+        back_matter = {
+            "about_author": f"About the Author\n\n{author} is a passionate writer dedicated to crafting stories that resonate with readers.",
+            "acknowledgments": "Acknowledgments\n\nThe author would like to thank everyone who supported the creation of this book.",
+            "other_back_matter": []
+        }
+        
+        # Store in memory
+        self.memory.add_document(
+            json.dumps(back_matter),
+            self.name,
+            metadata={"type": "back_matter"}
+        )
+        
+        logger.info(f"Created fallback back matter")
+        return back_matter

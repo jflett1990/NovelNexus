@@ -1,0 +1,54 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="mb-4">Generated Text for Project {{ project_id }}</h1>
+            <div class="mb-4">
+                <a href="/project-status/{{ project_id }}" class="btn btn-primary">Back to Project Status</a>
+                <a href="/" class="btn btn-secondary">Home</a>
+            </div>
+            
+            <div class="mb-4">
+                <p>This page shows all generated text for the project, organized by content type.</p>
+            </div>
+            
+            {% if content %}
+                <div class="accordion" id="generatedContent">
+                    {% for item in content %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="heading{{ loop.index }}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ loop.index }}" aria-expanded="false" aria-controls="collapse{{ loop.index }}">
+                                    {{ item.name }} 
+                                    {% if item.metadata and item.metadata.title %}
+                                        - {{ item.metadata.title }}
+                                    {% endif %}
+                                </button>
+                            </h2>
+                            <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" aria-labelledby="heading{{ loop.index }}" data-bs-parent="#generatedContent">
+                                <div class="accordion-body">
+                                    <div class="mb-3">
+                                        <strong>Type:</strong> {{ item.metadata.type if item.metadata and item.metadata.type else "Unknown" }}
+                                        <br>
+                                        <strong>Timestamp:</strong> {{ item.timestamp }}
+                                    </div>
+                                    <div class="generated-content border p-3 mb-3" style="white-space: pre-wrap; max-height: 500px; overflow-y: auto;">
+                                        {{ item.content }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="alert alert-warning">
+                    No generated content found for this project.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %} 

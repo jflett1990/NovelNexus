@@ -135,7 +135,7 @@ class OpenAIClient:
             
             content = response.choices[0].message.content
             
-            # For compatibility with Ollama API
+            # Structure the response
             result = {
                 "text": content,
                 "response": content,

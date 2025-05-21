@@ -55,7 +55,7 @@ class ChapterPlannerAgent:
         """
         if not manuscript_outline:
             logger.error("Cannot plan chapters without manuscript outline")
-            return []
+            return self._create_fallback_chapter_plan(12)
             
         # Format the outline for the prompt
         outline_text = self._format_outline_for_prompt(manuscript_outline)
@@ -99,7 +99,7 @@ Plan the next {target_chapters} chapters (or remaining chapters if less). For ea
 Format your response as a valid JSON array of chapter objects, with each chapter containing these fields.
 Follow this exact JSON structure:
 [
-  {
+  {{
     "number": 1,
     "title": "Chapter Title",
     "pov": "Character Name",
@@ -113,7 +113,7 @@ Follow this exact JSON structure:
     "objectives": ["Objective 1", "Objective 2"...],
     "word_count": 3000,
     "summary": "Detailed summary of the chapter"
-  },
+  }},
   ...
 ]"""
 
@@ -132,21 +132,35 @@ Follow this exact JSON structure:
             chapters_json = self._extract_json(chapters_json)
             
             # Parse chapter plans
-            chapter_plans = json.loads(chapters_json)
-            
-            # Validate structure
-            for chapter in chapter_plans:
-                required_fields = ["number", "title", "summary"]
-                for field in required_fields:
-                    if field not in chapter:
-                        chapter[field] = f"Missing {field}"
-            
-            logger.info(f"Successfully created {len(chapter_plans)} chapter plans")
-            return chapter_plans
+            try:
+                chapter_plans = json.loads(chapters_json)
+                
+                # Ensure it's a list - if it's an object with a chapters key, extract that
+                if isinstance(chapter_plans, dict) and "chapters" in chapter_plans:
+                    chapter_plans = chapter_plans["chapters"]
+                
+                if not isinstance(chapter_plans, list):
+                    logger.error("JSON response is not a list or object with chapters key")
+                    return self._create_fallback_chapter_plan(target_chapters)
+                
+                # Validate structure
+                for chapter in chapter_plans:
+                    required_fields = ["number", "title", "summary"]
+                    for field in required_fields:
+                        if field not in chapter:
+                            chapter[field] = f"Missing {field}"
+                
+                logger.info(f"Successfully created {len(chapter_plans)} chapter plans")
+                return chapter_plans
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing JSON from chapter planning: {str(e)}")
+                # Use fallback plan
+                return self._create_fallback_chapter_plan(target_chapters)
             
         except Exception as e:
             logger.error(f"Error planning chapters: {str(e)}")
-            return []
+            # Use fallback plan
+            return self._create_fallback_chapter_plan(target_chapters)
     
     def _create_chapter_planning_prompt(self, outline, genre, target_chapter_count, previous_chapters=None) -> str:
         """Create a prompt for chapter planning."""
@@ -229,4 +243,144 @@ Respond with ONLY a JSON object in this exact format:
             
             chapters.append(chapter)
         
-        return chapters 
+        return chapters
+
+    def _format_outline_for_prompt(self, manuscript_outline: Dict[str, Any]) -> str:
+        """
+        Format the manuscript outline for inclusion in a prompt.
+        
+        Args:
+            manuscript_outline: The complete outline of the manuscript
+            
+        Returns:
+            Formatted outline text
+        """
+        try:
+            # Extract key elements from the outline
+            title = manuscript_outline.get("title", "Untitled")
+            genre = manuscript_outline.get("genre", "Unknown")
+            target_length = manuscript_outline.get("target_length", "medium")
+            
+            # Extract characters
+            characters_text = ""
+            characters = manuscript_outline.get("characters", [])
+            if characters:
+                characters_text = "CHARACTERS:\n"
+                for idx, character in enumerate(characters):
+                    name = character.get("name", f"Character {idx+1}")
+                    role = character.get("role", "")
+                    desc = character.get("description", "")
+                    characters_text += f"- {name} ({role}): {desc}\n"
+            
+            # Extract world building
+            world_text = ""
+            world = manuscript_outline.get("world", {})
+            if world:
+                world_text = "WORLD:\n"
+                world_name = world.get("name", "")
+                world_desc = world.get("description", "")
+                world_text += f"{world_name}: {world_desc}\n"
+                
+                # Include locations if available
+                locations = world.get("locations", [])
+                if locations:
+                    world_text += "LOCATIONS:\n"
+                    for location in locations:
+                        loc_name = location.get("name", "")
+                        loc_desc = location.get("description", "")
+                        world_text += f"- {loc_name}: {loc_desc}\n"
+            
+            # Extract plot
+            plot_text = ""
+            plot = manuscript_outline.get("plot", {})
+            if plot:
+                plot_text = "PLOT STRUCTURE:\n"
+                
+                # Add plot points if available
+                plot_points = plot.get("plot_points", [])
+                if plot_points:
+                    plot_text += "Plot Points:\n"
+                    for point in plot_points:
+                        plot_text += f"- {point}\n"
+                
+                # Add arcs if available
+                arcs = plot.get("arcs", [])
+                if arcs:
+                    plot_text += "Character Arcs:\n"
+                    for arc in arcs:
+                        plot_text += f"- {arc}\n"
+                
+                # Add scenes if available
+                scenes = plot.get("scenes", [])
+                if scenes:
+                    plot_text += "Key Scenes:\n"
+                    for scene in scenes:
+                        plot_text += f"- {scene}\n"
+            
+            # Extract main idea
+            idea_text = ""
+            idea = manuscript_outline.get("idea", {})
+            if idea:
+                idea_text = "MAIN CONCEPT:\n"
+                idea_text += f"{idea.get('concept', '')}\n\n"
+                idea_text += f"THEMES: {', '.join(idea.get('themes', []))}\n"
+            
+            # Combine all elements
+            outline_text = f"""TITLE: {title}
+GENRE: {genre}
+TARGET LENGTH: {target_length}
+
+{idea_text}
+
+{characters_text}
+
+{world_text}
+
+{plot_text}
+"""
+            return outline_text
+            
+        except Exception as e:
+            logger.error(f"Error formatting outline for prompt: {str(e)}")
+            # Return a simplified version if parsing fails
+            return json.dumps(manuscript_outline, indent=2)
+            
+    def _extract_json(self, text: str) -> str:
+        """Extract JSON content from the text response."""
+        try:
+            # Try to parse as is first (might be valid JSON already)
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            # Look for JSON array start/end if not valid
+            start_idx = text.find('[')
+            end_idx = text.rfind(']')
+            
+            if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                json_str = text[start_idx:end_idx+1]
+                try:
+                    # Validate the extracted JSON
+                    json.loads(json_str)
+                    return json_str
+                except json.JSONDecodeError:
+                    pass
+            
+            # Try another approach - look for JSON object with chapters array
+            start_idx = text.find('{')
+            end_idx = text.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                json_str = text[start_idx:end_idx+1]
+                try:
+                    # Validate the extracted JSON
+                    json_obj = json.loads(json_str)
+                    # If it has chapters array, return that
+                    if "chapters" in json_obj and isinstance(json_obj["chapters"], list):
+                        return json.dumps(json_obj["chapters"])
+                    return json_str
+                except json.JSONDecodeError:
+                    pass
+            
+            # If all else fails, return empty array
+            logger.error(f"Could not extract valid JSON from response: {text[:100]}...")
+            return "[]" 

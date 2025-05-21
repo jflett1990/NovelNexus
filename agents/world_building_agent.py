@@ -7,6 +7,7 @@ from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.world_building_schema import WORLD_BUILDING_SCHEMA
 from utils.json_utils import robust_json_parse, with_retries, verify_memory_write, validate_schema
+from utils.validation_utils import validate_world
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +111,12 @@ Remember:
                         max_tokens=3000
                     )
                     
-                    world = response["parsed_json"]
-                    logger.info(f"Generated world using OpenAI")
+                    raw_world = response["parsed_json"]
                     
-                    # Validate required fields
-                    self._validate_world(world)
+                    # Use our validation utility to validate and fix the world data
+                    world = validate_world(raw_world)
+                    
+                    logger.info(f"Generated world using OpenAI with {len(world.get('locations', []))} locations")
                     
                     # Store in memory with verification
                     self._store_in_memory_verified(world)
@@ -125,22 +127,31 @@ Remember:
             
             # Create fallback world if OpenAI failed
             fallback_world = self._create_fallback_world(book_idea)
-            logger.warning(f"Using fallback world with {len(fallback_world.get('locations', []))} locations")
+            
+            # Validate fallback world too
+            validated_fallback = validate_world(fallback_world)
+            
+            logger.warning(f"Using fallback world with {len(validated_fallback.get('locations', []))} locations")
             
             # Store fallback in memory
-            self._store_in_memory_verified(fallback_world)
+            self._store_in_memory_verified(validated_fallback)
             
-            return fallback_world
+            return validated_fallback
             
         except Exception as e:
             logger.error(f"World generation error: {str(e)}")
             fallback_world = self._create_fallback_world(book_idea)
-            self._store_in_memory_verified(fallback_world)
-            return fallback_world
+            
+            # Validate fallback world
+            validated_fallback = validate_world(fallback_world)
+            
+            self._store_in_memory_verified(validated_fallback)
+            return validated_fallback
     
     def _validate_world(self, world: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Validate world data and fill in missing fields with defaults.
+        Legacy validation - now we use the validation_utils.validate_world method instead.
+        Kept for backward compatibility.
         
         Args:
             world: World data to validate
@@ -148,31 +159,7 @@ Remember:
         Returns:
             Validated world data with all required fields
         """
-        # Check required top-level fields
-        required_fields = ["name", "description", "locations", "cultural_elements", "history"]
-        
-        # Check if main fields exist and create if missing
-        for field in required_fields:
-            if field not in world:
-                if field in ["locations", "cultural_elements"]:
-                    world[field] = []
-                else:
-                    world[field] = f"Default {field.capitalize()}"
-                    logger.warning(f"Missing required field '{field}' in world data, using default")
-        
-        # Ensure locations have required fields
-        if "locations" in world and isinstance(world["locations"], list):
-            for i, location in enumerate(world["locations"]):
-                if not isinstance(location, dict):
-                    world["locations"][i] = {"name": f"Location {i+1}", "description": "Default location description"}
-                    continue
-                    
-                if "name" not in location:
-                    location["name"] = f"Location {i+1}"
-                if "description" not in location:
-                    location["description"] = "Default location description"
-        
-        return world
+        return validate_world(world)
     
     def _create_fallback_world(self, book_idea: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -105,7 +105,7 @@ Respond with research topics formatted according to this JSON schema: {json.dump
 """
         
         try:
-            # Try OpenAI first if enabled
+            # Try OpenAI if enabled
             if self.use_openai and self.openai_client:
                 try:
                     response = self.openai_client.generate(
@@ -124,40 +124,9 @@ Respond with research topics formatted according to this JSON schema: {json.dump
                     
                     return research
                 except Exception as e:
-                    logger.warning(f"OpenAI research generation failed: {e}, falling back to Ollama")
+                    logger.warning(f"OpenAI research generation failed: {e}, using fallback research")
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                try:
-                    response = self.ollama_client.generate(
-                        prompt=user_prompt,
-                        system=system_prompt,
-                        format="json"
-                    )
-                    
-                    # Extract and parse JSON from response
-                    text_response = response.get("response", "{}")
-                    
-                    # Extracting the JSON part from the response
-                    json_start = text_response.find("{")
-                    json_end = text_response.rfind("}") + 1
-                    
-                    if json_start >= 0 and json_end > json_start:
-                        json_str = text_response[json_start:json_end]
-                        research = json.loads(json_str)
-                    else:
-                        raise ValueError("Could not extract valid JSON from Ollama response")
-                    
-                    logger.info(f"Generated {len(research.get('topics', []))} research topics using Ollama")
-                    
-                    # Store in memory
-                    self._store_in_memory(research)
-                    
-                    return research
-                except Exception as e:
-                    logger.warning(f"Ollama research generation failed: {e}, using fallback research")
-            
-            # If we get here, both API calls failed or aren't available
+            # If we get here, OpenAI failed or isn't available
             # Generate fallback research based on the book idea
             fallback_research = self._generate_fallback_research(book_idea, world_data, num_topics)
             logger.warning("Using fallback research generation due to API failures")
@@ -381,175 +350,260 @@ Respond with research topics formatted according to this JSON schema: {json.dump
         specific_questions: List[str] = None
     ) -> Dict[str, Any]:
         """
-        Research a specific topic in more depth.
+        Research a specific topic in depth based on the topic ID.
         
         Args:
             topic_id: ID of the topic to research
-            specific_questions: Optional list of specific questions to answer
+            specific_questions: Optional list of specific questions to focus on
             
         Returns:
-            Dictionary with detailed research information
+            Dictionary with detailed research on the topic
         """
-        # Try to retrieve the original topic from memory
-        try:
-            original_topics = self.memory.query_memory(f"topic_id:{topic_id}", agent_name=self.name)
-            
-            if not original_topics:
-                logger.warning(f"Topic with ID {topic_id} not found in memory, trying alternative queries")
-                # Try alternative queries
-                all_topics = self.memory.query_memory("type:topic", agent_name=self.name)
-                if all_topics:
-                    logger.info(f"Found {len(all_topics)} topics, using the first available one")
-                    original_topics = [all_topics[0]]
-                else:
-                    logger.warning("No topics found at all, using fallback topic")
-                    # Create a fallback topic
-                    fallback_topic = {
-                        "id": topic_id,
-                        "name": "General Research",
-                        "description": "General background information",
-                        "key_questions": ["What background information is relevant?", 
-                                        "What details would enhance the narrative?"]
-                    }
-                    return self._generate_fallback_topic_research(fallback_topic, specific_questions)
-            
-            original_topic_doc = original_topics[0]
-            original_topic_text = original_topic_doc['text']
-            
-            try:
-                original_topic = json.loads(original_topic_text)
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid topic data for ID {topic_id}, using fallback")
-                fallback_topic = {
-                    "id": topic_id,
-                    "name": "Research Topic",
-                    "description": "Important background information",
-                    "key_questions": ["What information is needed for this story?"]
-                }
-                return self._generate_fallback_topic_research(fallback_topic, specific_questions)
-            
-            # Build questions to research
-            questions = specific_questions or original_topic.get("key_questions", [])
-            
-            if not questions:
-                questions = ["What essential information would help develop this story?"]
-                logger.warning("No questions provided for research, using default question")
-            
-            questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
-            
-            # Build the system prompt
-            system_prompt = """You are an expert researcher capable of providing detailed, accurate, and well-structured information on specific topics.
-Your task is to answer research questions in depth, providing factual information that would help an author write authentically about this topic.
-Include relevant details, historical context, technical information, and cultural nuances as appropriate.
-For fictional worlds, use your knowledge to provide plausible extrapolations.
-Provide output in JSON format."""
-            
-            # Build the user prompt
-            user_prompt = f"""Research the following topic in depth: {original_topic.get('name', 'Unknown Topic')}
+        logger.info(f"Researching topic {topic_id} for project {self.project_id}")
+        
+        # Get the original topic from memory
+        topics = self.get_all_research()
+        original_topic = None
+        
+        for topic in topics.get("topics", []):
+            if topic.get("id") == topic_id:
+                original_topic = topic
+                break
+        
+        if not original_topic:
+            logger.warning(f"Topic {topic_id} not found in memory, cannot research")
+            return {
+                "topic_id": topic_id,
+                "status": "error",
+                "message": "Topic not found in memory"
+            }
+        
+        topic_name = original_topic.get("name", "Unknown Topic")
+        description = original_topic.get("description", "")
+        
+        # Determine questions to research
+        questions = []
+        if specific_questions and isinstance(specific_questions, list):
+            questions.extend(specific_questions)
+        
+        if "key_questions" in original_topic and isinstance(original_topic["key_questions"], list):
+            for q in original_topic["key_questions"]:
+                if q not in questions:
+                    questions.append(q)
+        
+        if not questions:
+            questions = [
+                f"What is {topic_name} and why is it important?",
+                f"What are the key aspects of {topic_name} relevant to this book?",
+                "What historical context is important to understand?",
+                "What are common misconceptions about this topic?",
+                "How has this topic evolved over time?"
+            ]
+        
+        # Build the system prompt
+        system_prompt = """You are an expert research assistant for authors.
+Your task is to provide detailed, accurate research on a specific topic relevant to a book being written.
+The research should be useful for an author to authentically incorporate the topic into their writing.
+Focus on providing factual information, historical context, practical details, and correcting common misconceptions.
+Your response must be formatted as valid JSON according to the schema provided."""
+        
+        # Build the user prompt
+        questions_text = "\n".join([f"- {q}" for q in questions])
+        user_prompt = f"""Provide detailed research on the following topic for a book:
 
-Topic description: {original_topic.get('description', '')}
+Topic Name: {topic_name}
+Description: {description}
 
-Please answer these specific questions:
+Please answer these specific questions about the topic:
 {questions_text}
 
-Provide comprehensive, well-structured answers with relevant facts, concepts, and details an author would need.
-Each answer should be thorough enough to serve as a reference when writing about this topic.
+For each question:
+1. Provide a comprehensive answer with factual information
+2. Include historical context where relevant
+3. Mention practical details that would add authenticity to the writing
+4. Address common misconceptions
+5. Note any areas where further specialized research might be needed
 
-Respond with research results formatted as a JSON object in this format:
+Format your response as a valid JSON object with the following structure:
 {{
   "topic_id": "{topic_id}",
-  "topic_name": "{original_topic.get('name', 'Unknown Topic')}",
+  "topic_name": "{topic_name}",
   "research_date": "current date",
+  "overall_summary": "A concise summary of your findings",
   "answers": [
     {{
-      "question": "Question text",
-      "answer": "Detailed answer with multiple paragraphs and specific information",
-      "sources": ["Potential sources for this information", "Another potential source"]
-    }}
+      "question": "The first question",
+      "answer": "Detailed response to the question",
+      "key_facts": ["Important fact 1", "Important fact 2"]
+    }},
+    ...
   ],
-  "additional_findings": ["Any unexpected but relevant discoveries"],
-  "connections": ["Connections to other topics or aspects of the book"]
+  "additional_insights": ["Any other important information discovered"],
+  "sources": ["Mention types of sources this information would come from"]
 }}
 """
+        
+        try:
+            # Try OpenAI if enabled
+            if self.use_openai and self.openai_client:
+                try:
+                    response = self.openai_client.generate(
+                        prompt=user_prompt,
+                        system_prompt=system_prompt,
+                        json_mode=True,
+                        temperature=0.6,
+                        max_tokens=3000
+                    )
+                    
+                    research_results = response["parsed_json"]
+                    logger.info(f"Researched topic {topic_id} using OpenAI")
+                    
+                    # Store in memory
+                    self.memory.add_document(
+                        json.dumps(research_results),
+                        self.name,
+                        metadata={"type": "detailed_research", "topic_id": topic_id}
+                    )
+                    
+                    return research_results
+                except Exception as e:
+                    logger.warning(f"OpenAI topic research failed: {e}, using fallback")
             
-            try:
-                # Try OpenAI first if enabled
-                if self.use_openai and self.openai_client:
-                    try:
-                        response = self.openai_client.generate(
-                            prompt=user_prompt,
-                            system_prompt=system_prompt,
-                            json_mode=True,
-                            temperature=0.6,
-                            max_tokens=3000
-                        )
-                        
-                        research_results = response["parsed_json"]
-                        logger.info(f"Researched topic {topic_id} using OpenAI")
-                        
-                        # Store in memory
-                        self.memory.add_document(
-                            json.dumps(research_results),
-                            self.name,
-                            metadata={"type": "detailed_research", "topic_id": topic_id}
-                        )
-                        
-                        return research_results
-                    except Exception as e:
-                        logger.warning(f"OpenAI topic research failed: {e}, falling back to Ollama")
-                
-                # Fall back to Ollama if OpenAI failed or is not enabled
-                if self.use_ollama and self.ollama_client:
-                    try:
-                        response = self.ollama_client.generate(
-                            prompt=user_prompt,
-                            system=system_prompt,
-                            format="json"
-                        )
-                        
-                        # Extract and parse JSON from response
-                        text_response = response.get("response", "{}")
-                        
-                        # Extracting the JSON part from the response
-                        json_start = text_response.find("{")
-                        json_end = text_response.rfind("}") + 1
-                        
-                        if json_start >= 0 and json_end > json_start:
-                            json_str = text_response[json_start:json_end]
-                            research_results = json.loads(json_str)
-                        else:
-                            raise ValueError("Could not extract valid JSON from Ollama response")
-                        
-                        logger.info(f"Researched topic {topic_id} using Ollama")
-                        
-                        # Store in memory
-                        self.memory.add_document(
-                            json.dumps(research_results),
-                            self.name,
-                            metadata={"type": "detailed_research", "topic_id": topic_id}
-                        )
-                        
-                        return research_results
-                    except Exception as e:
-                        logger.warning(f"Ollama topic research failed: {e}, using fallback")
-                
-                # If both API calls failed, use fallback
-                return self._generate_fallback_topic_research(original_topic, questions)
-                
-            except Exception as e:
-                logger.error(f"Topic research error: {e}")
-                return self._generate_fallback_topic_research(original_topic, questions)
-                
+            # If OpenAI failed or is not enabled, use fallback
+            return self._generate_fallback_topic_research(original_topic, questions)
+            
         except Exception as e:
-            logger.error(f"Error in research_topic method: {e}")
-            fallback_topic = {
-                "id": topic_id,
-                "name": "Research Topic",
-                "description": "Important background information",
-                "key_questions": ["What essential information is needed?"]
+            logger.error(f"Topic research error: {e}")
+            return self._generate_fallback_topic_research(original_topic, questions)
+    
+    def synthesize_research(self) -> Dict[str, Any]:
+        """
+        Synthesize all research topics into a cohesive summary.
+        
+        Returns:
+            Dictionary with synthesized research
+        """
+        logger.info(f"Synthesizing research for project {self.project_id}")
+        
+        # Get all research topics from memory
+        topics_data = self.get_all_research()
+        topics = topics_data.get("topics", [])
+        
+        if not topics:
+            logger.warning("No research topics found to synthesize")
+            return {
+                "status": "error",
+                "message": "No research topics found to synthesize"
             }
-            return self._generate_fallback_topic_research(fallback_topic, specific_questions)
+        
+        # Create a list of topic summaries
+        topic_summaries = []
+        for topic in topics:
+            topic_name = topic.get("name", "Unknown Topic")
+            description = topic.get("description", "")
+            
+            # Try to get detailed research for this topic
+            detailed_research = None
+            try:
+                documents = self.memory.search(
+                    query=f"detailed research on {topic_name}",
+                    collection=self.name,
+                    filter={"type": "detailed_research", "topic_id": topic.get("id")}
+                )
+                
+                if documents:
+                    detailed_research = json.loads(documents[0].content)
+            except Exception as e:
+                logger.warning(f"Error retrieving detailed research for {topic_name}: {e}")
+            
+            summary = f"Topic: {topic_name}\nDescription: {description}\n"
+            
+            if detailed_research and "overall_summary" in detailed_research:
+                summary += f"Research Summary: {detailed_research['overall_summary']}\n"
+                
+                if "key_facts" in detailed_research:
+                    key_facts = "\n".join([f"- {fact}" for fact in detailed_research["key_facts"]])
+                    summary += f"Key Facts:\n{key_facts}\n"
+            
+            topic_summaries.append(summary)
+        
+        # Build the system prompt
+        system_prompt = """You are an expert research synthesis specialist for authors.
+Your task is to synthesize various research topics into a cohesive summary that will inform the author's writing.
+Identify connections between topics, highlight the most important information, and organize the research in a way that will be most useful for writing the book.
+Format your response as valid JSON according to the schema provided."""
+        
+        # Build the user prompt
+        all_summaries = "\n\n".join(topic_summaries)
+        user_prompt = f"""Synthesize the following research topics into a cohesive summary for the author:
 
+{all_summaries}
+
+Create a synthesis that:
+1. Identifies connections between the different research topics
+2. Highlights the most important information for writing the book
+3. Organizes the research in a logical way
+4. Notes any inconsistencies or gaps that might need further research
+5. Provides recommendations for how to use this research in writing
+
+Format your response as a valid JSON object with the following structure:
+{{
+  "synthesis_date": "current date",
+  "overview": "A concise overview of all the research",
+  "key_insights": [
+    "Important insight 1",
+    "Important insight 2"
+  ],
+  "topic_connections": [
+    {{
+      "topics": ["Topic A", "Topic B"],
+      "connection": "Description of how these topics are connected"
+    }}
+  ],
+  "writing_recommendations": [
+    "Recommendation 1",
+    "Recommendation 2"
+  ],
+  "gaps_and_inconsistencies": [
+    "Gap 1",
+    "Inconsistency 1"
+  ]
+}}
+"""
+
+        try:
+            # Try OpenAI if enabled
+            if self.use_openai and self.openai_client:
+                try:
+                    response = self.openai_client.generate(
+                        prompt=user_prompt,
+                        system_prompt=system_prompt,
+                        json_mode=True,
+                        temperature=0.6,
+                        max_tokens=3000
+                    )
+                    
+                    synthesis = response["parsed_json"]
+                    logger.info(f"Synthesized research using OpenAI")
+                    
+                    # Store in memory
+                    self.memory.add_document(
+                        json.dumps(synthesis),
+                        self.name,
+                        metadata={"type": "research_synthesis"}
+                    )
+                    
+                    return synthesis
+                except Exception as e:
+                    logger.warning(f"OpenAI research synthesis failed: {e}, using fallback synthesis")
+            
+            # If OpenAI failed or is not enabled, use fallback
+            return self._generate_fallback_synthesis(topics)
+            
+        except Exception as e:
+            logger.error(f"Research synthesis error: {e}")
+            return self._generate_fallback_synthesis(topics)
+    
     def _generate_fallback_topic_research(
         self,
         topic: Dict[str, Any],
@@ -600,184 +654,6 @@ Respond with research results formatted as a JSON object in this format:
         
         logger.warning(f"Using fallback research for topic {topic_id}")
         return research_results
-    
-    def synthesize_research(self) -> Dict[str, Any]:
-        """
-        Synthesize all research topics into a cohesive summary.
-        
-        Returns:
-            Dictionary with synthesized research
-        """
-        # Retrieve all research from memory
-        try:
-            research_docs = self.memory.get_agent_memory(self.name)
-            
-            if not research_docs:
-                logger.warning("No research found in memory, generating minimal synthesis")
-                return self._generate_fallback_synthesis()
-            
-            # Extract topics and detailed research
-            topics = []
-            detailed_research = []
-            
-            for doc in research_docs:
-                metadata = doc.get('metadata', {})
-                doc_type = metadata.get('type', '')
-                
-                try:
-                    data = json.loads(doc['text'])
-                    
-                    if doc_type == 'topic':
-                        topics.append(data)
-                    elif doc_type == 'detailed_research':
-                        detailed_research.append(data)
-                    elif doc_type == 'research_results' and 'topics' in data:
-                        topics.extend(data['topics'])
-                except json.JSONDecodeError:
-                    continue
-            
-            if not topics:
-                logger.warning("No valid research topics found in memory, generating minimal synthesis")
-                return self._generate_fallback_synthesis()
-            
-            # Build the system prompt
-            system_prompt = """You are an expert research synthesizer for authors.
-Your task is to analyze multiple research topics and findings, identify connections between them,
-and create a cohesive summary that highlights the most important elements for the book project.
-Focus on creating a useful reference that connects different research areas.
-Provide output in JSON format."""
-            
-            # Build the user prompt
-            topic_summaries = []
-            for topic in topics[:3]:  # Limit to prevent excessive prompt length
-                topic_name = topic.get('name', 'Unknown Topic')
-                topic_desc = topic.get('description', '')
-                topic_importance = topic.get('importance', '')
-                
-                summary = f"Topic: {topic_name}\nDescription: {topic_desc}\nImportance: {topic_importance}"
-                topic_summaries.append(summary)
-            
-            detailed_summaries = []
-            for research in detailed_research[:2]:  # Limit to prevent excessive prompt length
-                topic_name = research.get('topic_name', 'Unknown Topic')
-                answers = research.get('answers', [])
-                
-                answer_texts = [f"Q: {a.get('question', '')}\nA: {a.get('answer', '')[:200]}..." for a in answers[:2]]
-                answer_summary = "\n".join(answer_texts)
-                
-                summary = f"Detailed Research - {topic_name}:\n{answer_summary}"
-                detailed_summaries.append(summary)
-            
-            topics_text = "\n\n".join(topic_summaries)
-            detailed_text = "\n\n".join(detailed_summaries)
-            
-            user_prompt = f"""Synthesize the following research topics and detailed findings into a cohesive summary for an author:
-
-RESEARCH TOPICS:
-{topics_text}
-
-DETAILED RESEARCH:
-{detailed_text}
-
-Create a synthesis that:
-1. Summarizes the key findings across all topics
-2. Identifies important connections between different research areas
-3. Highlights the most critical information for writing the book
-4. Organizes the information in a useful, accessible structure
-5. Notes any gaps that might need additional research
-
-Respond with the synthesis formatted as a JSON object in this format:
-{{
-  "overview": "Executive summary of all research",
-  "key_findings": [
-    {{
-      "topic": "Topic name",
-      "critical_points": ["Important point 1", "Important point 2"]
-    }}
-  ],
-  "connections": [
-    {{
-      "description": "Description of a connection between topics",
-      "related_topics": ["Topic 1", "Topic 2"],
-      "significance": "Why this connection matters for the book"
-    }}
-  ],
-  "writing_recommendations": ["Specific recommendations for using this research in writing"],
-  "research_gaps": ["Areas that might need additional research"]
-}}
-"""
-            
-            try:
-                # Try OpenAI first if enabled
-                if self.use_openai and self.openai_client:
-                    try:
-                        response = self.openai_client.generate(
-                            prompt=user_prompt,
-                            system_prompt=system_prompt,
-                            json_mode=True,
-                            temperature=0.6,
-                            max_tokens=3000
-                        )
-                        
-                        synthesis = response["parsed_json"]
-                        logger.info(f"Synthesized research using OpenAI")
-                        
-                        # Store in memory
-                        self.memory.add_document(
-                            json.dumps(synthesis),
-                            self.name,
-                            metadata={"type": "research_synthesis"}
-                        )
-                        
-                        return synthesis
-                    except Exception as e:
-                        logger.warning(f"OpenAI research synthesis failed: {e}, falling back to Ollama")
-                
-                # Fall back to Ollama if OpenAI failed or is not enabled
-                if self.use_ollama and self.ollama_client:
-                    try:
-                        response = self.ollama_client.generate(
-                            prompt=user_prompt,
-                            system=system_prompt,
-                            format="json"
-                        )
-                        
-                        # Extract and parse JSON from response
-                        text_response = response.get("response", "{}")
-                        
-                        # Extracting the JSON part from the response
-                        json_start = text_response.find("{")
-                        json_end = text_response.rfind("}") + 1
-                        
-                        if json_start >= 0 and json_end > json_start:
-                            json_str = text_response[json_start:json_end]
-                            synthesis = json.loads(json_str)
-                        else:
-                            raise ValueError("Could not extract valid JSON from Ollama response")
-                        
-                        logger.info(f"Synthesized research using Ollama")
-                        
-                        # Store in memory
-                        self.memory.add_document(
-                            json.dumps(synthesis),
-                            self.name,
-                            metadata={"type": "research_synthesis"}
-                        )
-                        
-                        return synthesis
-                    except Exception as e:
-                        logger.warning(f"Ollama research synthesis failed: {e}, using fallback synthesis")
-                
-                # If both API calls failed, use fallback
-                return self._generate_fallback_synthesis(topics)
-                
-            except Exception as e:
-                logger.error(f"Research synthesis error: {e}")
-                return self._generate_fallback_synthesis(topics)
-                
-        except Exception as e:
-            logger.error(f"Error in synthesize_research method: {e}")
-            return self._generate_fallback_synthesis()
     
     def _generate_fallback_synthesis(self, topics: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """

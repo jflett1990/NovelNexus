@@ -101,11 +101,26 @@ class ManuscriptAgent:
             "full_text": full_manuscript
         }
         
-        # Save manuscript to memory
+        # Save the final manuscript to memory
         self.memory.add_document(
             json.dumps(manuscript_data),
             self.name,
-            metadata={"type": "final_manuscript"}
+            metadata={
+                "type": "final_manuscript",
+                "title": manuscript_data["title"],
+                "word_count": manuscript_data["word_count"]
+            }
+        )
+        
+        # Store an additional copy with type:manuscript for easier retrieval
+        self.memory.add_document(
+            json.dumps(manuscript_data),
+            self.name,
+            metadata={
+                "type": "manuscript",
+                "title": manuscript_data["title"],
+                "word_count": manuscript_data["word_count"]
+            }
         )
         
         # Also save just the full manuscript text for semantic search

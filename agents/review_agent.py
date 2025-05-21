@@ -151,127 +151,39 @@ Respond with the review formatted as a JSON object with the following properties
 """
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=3000
-                    )
-                    
-                    review = response["parsed_json"]
-                    logger.info(f"Reviewed chapter {chapter_id} using OpenAI")
-                    
-                    # Store in memory
-                    self._store_in_memory(review, chapter_id)
-                    
-                    return review
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter review failed: {e}, falling back to Ollama")
+            # Generate the review using OpenAI
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+                model="gpt-4o"
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                try:
-                    # First try to parse the entire response as JSON
-                    review = json.loads(text_response)
-                except json.JSONDecodeError:
-                    # If that fails, try to extract JSON using regex
-                    logger.warning(f"Failed to parse Ollama response as JSON, attempting to extract valid JSON")
-                    
-                    # Extracting the JSON part from the response
-                    json_start = text_response.find("{")
-                    json_end = text_response.rfind("}") + 1
-                    
-                    if json_start >= 0 and json_end > json_start:
-                        json_str = text_response[json_start:json_end]
-                        try:
-                            review = json.loads(json_str)
-                        except json.JSONDecodeError as json_error:
-                            logger.error(f"Failed to extract JSON from Ollama response: {json_error}")
-                            # Create a fallback review structure
-                            review = {
-                                "overall_rating": 5,
-                                "strengths": ["The chapter was written successfully"],
-                                "issues": [{"description": "Unable to analyze due to JSON parsing error", 
-                                           "severity": "medium", 
-                                           "example": "N/A", 
-                                           "suggestion": "Please review manually"}],
-                                "recommendations": ["Review chapter manually due to AI analysis failure"]
-                            }
-                    else:
-                        # If no valid JSON can be found, create a fallback review
-                        logger.error("No valid JSON found in Ollama response")
-                        review = {
-                            "overall_rating": 5,
-                            "strengths": ["The chapter was written successfully"],
-                            "issues": [{"description": "Unable to analyze due to JSON parsing error", 
-                                       "severity": "medium", 
-                                       "example": "N/A", 
-                                       "suggestion": "Please review manually"}],
-                            "recommendations": ["Review chapter manually due to AI analysis failure"]
-                        }
-                
-                # Validate/fix the review structure
-                if not isinstance(review, dict):
-                    logger.warning("Review result is not a dictionary, creating fallback")
-                    review = {
-                        "overall_rating": 5,
-                        "strengths": ["Content was generated"],
-                        "issues": [{"description": "Invalid review format", 
-                                   "severity": "medium", 
-                                   "example": "N/A", 
-                                   "suggestion": "Please review manually"}],
-                        "recommendations": ["Review chapter manually"]
-                    }
-                
-                # Ensure required fields exist
-                required_fields = ["overall_rating", "strengths", "issues", "recommendations"]
-                for field in required_fields:
-                    if field not in review:
-                        if field == "overall_rating":
-                            review[field] = 5
-                        else:
-                            review[field] = []
-                            
-                # If issues field exists but has invalid structure, fix it
-                if "issues" in review and not isinstance(review["issues"], list):
-                    review["issues"] = []
-                
-                logger.info(f"Reviewed chapter {chapter_id} using Ollama")
-                
-                # Store in memory
-                self._store_in_memory(review, chapter_id)
-                
-                return review
+            review = response["parsed_json"]
+            logger.info(f"Reviewed chapter {chapter_id} using OpenAI")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to review chapter")
+            # Store in memory
+            self._store_in_memory(review, chapter_id)
+            
+            return review
             
         except Exception as e:
-            logger.error(f"Chapter review error: {e}")
-            # Return a fallback review instead of raising an exception
+            logger.error(f"Error reviewing chapter {chapter_id}: {str(e)}")
+            
+            # Create a fallback review
             fallback_review = {
                 "overall_rating": 5,
-                "strengths": ["The chapter was written successfully"],
-                "issues": [{"description": f"Review failed: {str(e)}", 
-                           "severity": "medium", 
-                           "example": "N/A", 
-                           "suggestion": "Please check the chapter manually"}],
-                "recommendations": ["Manual review required due to error"]
+                "strengths": ["Unable to generate detailed review due to an error"],
+                "issues": [{
+                    "description": "Error generating review",
+                    "severity": "high",
+                    "example": str(e),
+                    "suggestion": "Try reviewing with different parameters"
+                }],
+                "recommendations": ["Retry review with different parameters"]
             }
             
-            # Store the fallback in memory
+            # Store even the fallback in memory
             self._store_in_memory(fallback_review, chapter_id)
             
             return fallback_review

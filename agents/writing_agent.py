@@ -224,138 +224,109 @@ class WritingAgent:
         style_guide: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Write a chapter by breaking it down into individual scenes.
+        Write a chapter by breaking it into scenes.
         
         Args:
             chapter_data: Information about the chapter
-            characters: List of character data
+            characters: List of character information
             world: World building information
-            story_context: Context information for the chapter
-            style_guide: Style guidelines
+            story_context: Structured context for the chapter
+            style_guide: Writing style guidelines
             
         Returns:
-            Dictionary containing the completed chapter
+            Dictionary containing the chapter content
         """
-        logger.info(f"Writing chapter {chapter_data.get('id', 'unknown')} by scenes")
-        
-        # Extract chapter information
+        # Extract necessary info
         chapter_id = chapter_data.get("id", str(uuid.uuid4()))
         chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
-        chapter_summary = chapter_data.get("summary", "")
+        chapter_events = chapter_data.get("events", [])
+        num_scenes = chapter_data.get("num_scenes", 3)
         
-        # Get scenes from chapter data
-        scenes = chapter_data.get("scenes", [])
+        # Use events to determine scenes if available, otherwise use num_scenes
+        scenes = []
+        if chapter_events:
+            # Create a scene for each event or group of events
+            # Split events into num_scenes scenes
+            events_per_scene = max(1, len(chapter_events) // num_scenes)
+            for i in range(0, len(chapter_events), events_per_scene):
+                scene_events = chapter_events[i:i+events_per_scene]
+                scenes.append({
+                    "scene_index": i // events_per_scene,
+                    "events": scene_events
+                })
+        else:
+            # If no events specified, create empty scenes
+            for i in range(num_scenes):
+                scenes.append({
+                    "scene_index": i,
+                    "events": []
+                })
         
-        # If no scenes are defined, create a default scene structure
-        if not scenes:
-            logger.warning(f"No scenes defined for chapter {chapter_id}, creating default scene structure")
-            scenes = [
-                {"id": f"{chapter_id}-scene-1", "description": "Opening scene of the chapter"},
-                {"id": f"{chapter_id}-scene-2", "description": "Middle scene with rising action"},
-                {"id": f"{chapter_id}-scene-3", "description": "Closing scene with resolution or cliffhanger"}
-            ]
-        
-        # Write each scene
-        scene_contents = []
+        # Generate each scene
+        scene_texts = []
+        scene_descriptions = []
         for i, scene in enumerate(scenes):
-            scene_id = scene.get("id", f"{chapter_id}-scene-{i+1}")
-            scene_description = scene.get("description", "")
-            
-            logger.info(f"Writing scene {i+1}/{len(scenes)} for chapter {chapter_id}")
-            
-            # Build the system prompt for this scene
-            system_prompt = """You are an expert creative writer crafting a scene within a book chapter.
-Write engaging, vivid prose that advances the story and develops characters.
-Focus on 'showing, not telling' with descriptive language, authentic dialogue, and sensory details.
-The scene should have a clear purpose, emotional arc, and connection to the overall chapter goal."""
-            
-            if style_guide:
-                # Add style guide information
-                tone = style_guide.get("tone", "")
-                perspective = style_guide.get("perspective", "")
-                tense = style_guide.get("tense", "")
-                
-                style_notes = f"Tone: {tone}\nPerspective: {perspective}\nTense: {tense}"
-                system_prompt += f"\n\nFollow these style guidelines:\n{style_notes}"
-            
-            # Build the user prompt
-            user_prompt = f"""Write scene {i+1} of {len(scenes)} for Chapter: {chapter_title}
-
-Chapter Summary:
-{chapter_summary}
-
-Scene Description:
-{scene_description}
-
-Context for this scene:
-- Book title: {story_context.get('book', {}).get('title', 'Untitled')}
-- Previous events: {story_context.get('previous_chapter', 'No previous context')}
-
-Characters in this scene:
-{json.dumps([c for c in characters[:3]], indent=2)}
-
-Write only this scene as polished prose, focusing on the described events and character interactions.
-Do not include scene numbers, headers, or meta-information - write just the scene content.
-"""
-            
             try:
-                # Try OpenAI first if available
-                if self.use_openai and self.openai_client and self.openai_client.is_available():
-                    try:
-                        response = self.openai_client.generate(
-                            prompt=user_prompt,
-                            system_prompt=system_prompt,
-                            temperature=0.7,
-                            max_tokens=2000
-                        )
-                        
-                        scene_content = response["content"]
-                        logger.info(f"Generated scene {i+1} for chapter {chapter_id} using OpenAI")
-                        scene_contents.append(scene_content)
-                        continue
-                    except Exception as e:
-                        logger.warning(f"OpenAI scene generation failed: {e}, falling back to Ollama")
+                # Create scene context
+                scene_context = story_context.copy()
+                scene_context["scene"] = {
+                    "index": i + 1,
+                    "events": scene.get("events", []),
+                    "total_scenes": len(scenes)
+                }
                 
-                # Fall back to Ollama
-                if self.use_ollama and self.ollama_client:
-                    response = self.ollama_client.generate(
-                        prompt=user_prompt,
-                        system=system_prompt,
-                        model="deepseek-v2:16b",
-                        temperature=0.7
+                # Create the prompt
+                scene_prompt = self._create_scene_writing_prompt(
+                    story_context=scene_context,
+                    characters=characters,
+                    world=world,
+                    style_guide=style_guide,
+                    scene_index=i,
+                    total_scenes=len(scenes)
+                )
+                
+                # Generate the scene text
+                try:
+                    response = self.openai_client.generate(
+                        prompt=scene_prompt,
+                        model="gpt-4o"
                     )
                     
-                    scene_content = response.get("response", "")
-                    logger.info(f"Generated scene {i+1} for chapter {chapter_id} using Ollama")
-                    scene_contents.append(scene_content)
-                    continue
-                
-                raise Exception("No available AI service (OpenAI or Ollama) to generate scene")
+                    scene_text = response.get("content", "").strip()
+                    logger.info(f"Generated scene {i+1} for chapter {chapter_id} using OpenAI")
+                except Exception as e:
+                    logger.error(f"Error generating scene with OpenAI: {str(e)}")
+                    scene_text = f"[Scene {i+1} content placeholder]"
+                    
+                # Add scene to the list
+                if scene_text:
+                    scene_texts.append(scene_text)
+                    scene_descriptions.append(f"Scene {i+1}: {scene.get('events', [])}")
                 
             except Exception as e:
-                logger.error(f"Scene generation error: {str(e)}")
-                # Add an error placeholder for this scene
-                scene_contents.append(f"[Scene {i+1} could not be generated due to an error: {str(e)}]")
+                logger.error(f"Error generating scene {i+1}: {str(e)}")
+                scene_texts.append(f"[Error generating scene {i+1}]")
         
-        # Combine scenes into a full chapter
-        chapter_content = "\n\n" + "\n\n".join(scene_contents)
+        # Combine all scenes into the full chapter
+        chapter_content = "\n\n".join(scene_texts)
         
-        # Create the chapter object
-        chapter = {
+        # Build chapter metadata
+        chapter_result = {
             "id": chapter_id,
             "title": chapter_title,
             "content": chapter_content,
-            "scenes": scenes
+            "scenes": scene_descriptions,
+            "metadata": {
+                "approach": "scene_based",
+                "scene_count": len(scenes),
+                "wordcount": len(chapter_content.split())
+            }
         }
         
         # Store in memory
-        self.memory.add_document(
-            json.dumps(chapter),
-            self.name,
-            metadata={"type": "chapter", "chapter_id": chapter_id}
-        )
+        self._store_in_memory(chapter_result)
         
-        return chapter
+        return chapter_result
     
     def _write_chapter_as_unit(
         self,
@@ -366,149 +337,58 @@ Do not include scene numbers, headers, or meta-information - write just the scen
         style_guide: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Write a chapter as a single unit (for less complex chapters).
+        Write a chapter as a single unit without breaking into scenes.
         
         Args:
             chapter_data: Information about the chapter
-            characters: List of character data
+            characters: List of character information
             world: World building information
-            story_context: Context information for the chapter
-            style_guide: Style guidelines
+            story_context: Structured context for the chapter
+            style_guide: Writing style guidelines
             
         Returns:
-            Dictionary containing the completed chapter
+            Dictionary containing the chapter content
         """
-        logger.info(f"Writing chapter {chapter_data.get('id', 'unknown')} as a single unit")
-        
         # Extract chapter information
         chapter_id = chapter_data.get("id", str(uuid.uuid4()))
         chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
-        chapter_summary = chapter_data.get("summary", "")
         
-        # Build the system prompt
-        system_prompt = """You are an expert creative writer crafting a book chapter.
-Write an engaging, well-structured chapter that advances the story and develops characters.
-Focus on 'showing, not telling' with descriptive language, authentic dialogue, and sensory details.
-The chapter should have a clear beginning, middle, and end with proper flow and pacing."""
+        # Create the prompt
+        chapter_prompt = self._create_chapter_writing_prompt(
+            story_context=story_context,
+            characters=characters,
+            world=world,
+            style_guide=style_guide
+        )
         
-        if style_guide:
-            # Add style guide information
-            tone = style_guide.get("tone", "")
-            perspective = style_guide.get("perspective", "")
-            tense = style_guide.get("tense", "")
-            
-            style_notes = f"Tone: {tone}\nPerspective: {perspective}\nTense: {tense}"
-            system_prompt += f"\n\nFollow these style guidelines:\n{style_notes}"
-        
-        # Get character information (limit to 3 most important characters)
-        main_characters = characters[:3] if characters else []
-        
-        # Build the user prompt
-        user_prompt = f"""Write Chapter: {chapter_title}
-
-Chapter Summary:
-{chapter_summary}
-
-Story Context:
-- Book title: {story_context.get('book', {}).get('title', 'Untitled')}
-- Book summary: {story_context.get('book', {}).get('summary', 'No summary available')}
-- Previous events: {story_context.get('previous_chapter', 'No previous context')}
-
-Characters in this chapter:
-{json.dumps(main_characters, indent=2)}
-
-Write a complete, engaging chapter that follows this outline. Include:
-1. Vivid descriptions of settings and characters
-2. Meaningful dialogue that advances plot and reveals character
-3. Internal thoughts and emotions where appropriate
-4. Clear narrative flow
-5. Pacing appropriate to the events described
-
-The chapter should be well-structured prose with proper paragraphing.
-Do not include any meta-text or explanations - write only the chapter content.
-"""
-        
+        # Generate the chapter content
         try:
-            # Try OpenAI first if available
-            if self.use_openai and self.openai_client and self.openai_client.is_available():
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        temperature=0.7,
-                        max_tokens=4000
-                    )
-                    
-                    chapter_content = response["content"]
-                    logger.info(f"Generated chapter {chapter_id} using OpenAI")
-                    
-                    # Create the chapter object
-                    chapter = {
-                        "id": chapter_id,
-                        "title": chapter_title,
-                        "content": chapter_content
-                    }
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(chapter),
-                        self.name,
-                        metadata={"type": "chapter", "chapter_id": chapter_id}
-                    )
-                    
-                    return chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter generation failed: {e}, falling back to Ollama")
-            
-            # Fall back to Ollama
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    model="deepseek-v2:16b",
-                    temperature=0.7,
-                    context_window=24000
-                )
-                
-                chapter_content = response.get("response", "")
-                logger.info(f"Generated chapter {chapter_id} using Ollama")
-                
-                # Create the chapter object
-                chapter = {
-                    "id": chapter_id,
-                    "title": chapter_title,
-                    "content": chapter_content
-                }
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(chapter),
-                    self.name,
-                    metadata={"type": "chapter", "chapter_id": chapter_id}
-                )
-                
-                return chapter
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to generate chapter")
-            
-        except Exception as e:
-            logger.error(f"Chapter generation error: {str(e)}")
-            
-            # Create a minimal chapter structure with error message
-            chapter = {
-                "id": chapter_id,
-                "title": chapter_title,
-                "content": f"[This chapter could not be generated due to an error: {str(e)}]\n\nPlaceholder content based on the outline:\n\n{chapter_summary}"
-            }
-            
-            # Still store this placeholder in memory
-            self.memory.add_document(
-                json.dumps(chapter),
-                self.name,
-                metadata={"type": "chapter", "chapter_id": chapter_id, "is_error_placeholder": True}
+            response = self.openai_client.generate(
+                prompt=chapter_prompt,
+                model="gpt-4o"
             )
             
-            return chapter
+            chapter_content = response.get("content", "").strip()
+            logger.info(f"Generated chapter {chapter_id} using OpenAI")
+        except Exception as e:
+            logger.error(f"Error generating chapter with OpenAI: {str(e)}")
+            chapter_content = f"[Chapter {chapter_title} content placeholder]"
+        
+        # Build chapter metadata
+        chapter_result = {
+            "id": chapter_id,
+            "title": chapter_title,
+            "content": chapter_content,
+            "metadata": {
+                "approach": "single_unit",
+                "wordcount": len(chapter_content.split())
+            }
+        }
+        
+        # Store in memory
+        self._store_in_memory(chapter_result)
+        
+        return chapter_result
     
     def rewrite_section(
         self,
@@ -517,152 +397,75 @@ Do not include any meta-text or explanations - write only the chapter content.
         rewrite_instructions: str
     ) -> Dict[str, Any]:
         """
-        Rewrite a specific section within a chapter.
+        Rewrite a specific section of a chapter based on instructions.
         
         Args:
-            chapter_id: ID of the chapter containing the section
-            section_identifier: Description or excerpt identifying the section
+            chapter_id: ID of the chapter to rewrite
+            section_identifier: Text identifier for the section (e.g., first paragraph or specific text)
             rewrite_instructions: Instructions for the rewrite
             
         Returns:
-            Dictionary with the updated chapter
+            Dictionary with the rewritten section and metadata
         """
-        # Get the original chapter
-        chapter_docs = self.memory.query_memory(f"id:{chapter_id}", agent_name=self.name)
+        logger.info(f"Rewriting section in chapter {chapter_id}")
         
-        if not chapter_docs:
-            raise ValueError(f"Chapter with ID {chapter_id} not found in memory")
+        # Fetch the chapter from memory
+        chapter_documents = self.memory.query(
+            f"chapter_id:{chapter_id}",
+            collection=self.name,
+            limit=1
+        )
         
-        chapter_doc = chapter_docs[0]
+        if not chapter_documents:
+            logger.error(f"Chapter {chapter_id} not found in memory")
+            return {"error": f"Chapter {chapter_id} not found"}
         
         try:
-            chapter_data = json.loads(chapter_doc['text'])
-        except json.JSONDecodeError:
-            chapter_data = {
-                "id": chapter_id,
-                "content": chapter_doc['text']
+            # Get the chapter content
+            chapter_data = json.loads(chapter_documents[0].page_content)
+            chapter_content = chapter_data.get("content", "")
+            chapter_title = chapter_data.get("title", f"Chapter {chapter_id}")
+            
+            # Build the prompt for rewriting
+            rewrite_prompt = f"""You are a skilled editor and creative writer working on a manuscript revision.
+
+ORIGINAL CHAPTER: {chapter_title}
+
+SECTION TO REVISE: {section_identifier}
+
+REVISION INSTRUCTIONS: {rewrite_instructions}
+
+CURRENT TEXT:
+{chapter_content}
+
+Please revise the specific section identified above according to the revision instructions. Return only the revised text for that section, maintaining the style and flow of the rest of the chapter.
+
+REVISED SECTION:"""
+            
+            try:
+                # Generate the rewritten section
+                response = self.openai_client.generate(
+                    prompt=rewrite_prompt,
+                    model="gpt-4o"
+                )
+                
+                rewritten_section = response.get("content", "").strip()
+                logger.info(f"Rewrote section in chapter {chapter_id} using OpenAI")
+            except Exception as e:
+                logger.error(f"Error rewriting section with OpenAI: {str(e)}")
+                return {"error": f"Error rewriting section: {str(e)}"}
+            
+            # Return the rewritten section
+            return {
+                "chapter_id": chapter_id,
+                "original_section": section_identifier,
+                "rewritten_section": rewritten_section,
+                "instructions": rewrite_instructions
             }
-        
-        chapter_content = chapter_data.get("content", "")
-        chapter_title = chapter_data.get("title", "Untitled Chapter")
-        chapter_number = chapter_data.get("number", 0)
-        
-        # Build the system prompt
-        system_prompt = """You are an expert author and editor specializing in rewriting sections of text.
-Your task is to rewrite a specific section of a chapter based on the provided instructions.
-The rewritten section should blend seamlessly with the rest of the chapter and maintain the same style and tone.
-Your output should include only the rewritten section, not the entire chapter."""
-        
-        # Build the user prompt
-        user_prompt = f"""Rewrite the following section of Chapter {chapter_number}: {chapter_title} according to these instructions:
-
-{rewrite_instructions}
-
-Section to rewrite:
-{section_identifier}
-
-Current chapter content:
-{chapter_content}
-
-Provide ONLY the rewritten section that should replace the identified section.
-Ensure the rewritten section maintains consistency with the overall style and flows naturally within the chapter.
-"""
-        
-        try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        temperature=0.7,
-                        max_tokens=2000
-                    )
-                    
-                    rewritten_section = response["text"]
-                    logger.info(f"Rewrote section in chapter {chapter_id} using OpenAI")
-                    
-                    # Now get instructions for integrating the section
-                    integration_prompt = f"""I need to replace a section in a chapter with a rewritten version.
-
-Original chapter:
-{chapter_content}
-
-Section to replace:
-{section_identifier}
-
-Rewritten section:
-{rewritten_section}
-
-Give me the full updated chapter content with the rewritten section properly integrated.
-Just provide the full text without explanation."""
-                    
-                    integration_response = self.openai_client.generate(
-                        prompt=integration_prompt,
-                        system_prompt="You are an expert editor who helps integrate rewrites into existing text.",
-                        temperature=0.3,
-                        max_tokens=4000
-                    )
-                    
-                    updated_content = integration_response["text"]
-                    
-                    # Update and store the chapter
-                    updated_chapter = chapter_data.copy()
-                    updated_chapter["content"] = updated_content
-                    updated_chapter["word_count"] = len(updated_content.split())
-                    
-                    self._store_in_memory(updated_chapter)
-                    
-                    return updated_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI section rewrite failed: {e}, falling back to Ollama")
-            
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt
-                )
-                
-                rewritten_section = response.get("response", "")
-                logger.info(f"Rewrote section in chapter {chapter_id} using Ollama")
-                
-                # Now get instructions for integrating the section
-                integration_prompt = f"""I need to replace a section in a chapter with a rewritten version.
-
-Original chapter:
-{chapter_content}
-
-Section to replace:
-{section_identifier}
-
-Rewritten section:
-{rewritten_section}
-
-Give me the full updated chapter content with the rewritten section properly integrated.
-Just provide the full text without explanation."""
-                
-                integration_response = self.ollama_client.generate(
-                    prompt=integration_prompt,
-                    system="You are an expert editor who helps integrate rewrites into existing text."
-                )
-                
-                updated_content = integration_response.get("response", "")
-                
-                # Update and store the chapter
-                updated_chapter = chapter_data.copy()
-                updated_chapter["content"] = updated_content
-                updated_chapter["word_count"] = len(updated_content.split())
-                
-                self._store_in_memory(updated_chapter)
-                
-                return updated_chapter
-            
-            raise Exception("No available AI service (OpenAI or Ollama) to rewrite section")
             
         except Exception as e:
-            logger.error(f"Section rewrite error: {e}")
-            raise Exception(f"Failed to rewrite section: {e}")
+            logger.error(f"Error processing chapter for rewriting: {str(e)}")
+            return {"error": f"Error processing chapter: {str(e)}"}
     
     def generate_style_guide(
         self,
@@ -671,130 +474,116 @@ Just provide the full text without explanation."""
         style_preferences: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generate a style guide for consistent writing.
+        Generate a style guide for the book with consistent guidelines.
         
         Args:
-            book_idea: Dictionary containing the book idea
-            sample_text: Optional sample text demonstrating the desired style
-            style_preferences: Optional preferences for style elements
+            book_idea: Basic information about the book
+            sample_text: Optional sample text to base style on
+            style_preferences: Optional user preferences for style
             
         Returns:
-            Dictionary with the style guide
+            Dictionary with style guidelines
         """
-        # Extract key information from book idea
-        title = book_idea.get("title", "")
+        # Create the style guide generation prompt
         genre = book_idea.get("genre", "")
-        themes = book_idea.get("themes", [])
-        themes_str = ", ".join(themes) if isinstance(themes, list) else themes
+        audience = book_idea.get("target_audience", "general")
+        title = book_idea.get("title", "")
+        setting = book_idea.get("setting", "")
+        era = book_idea.get("era", "contemporary")
         
-        # Build the system prompt
-        system_prompt = """You are an expert literary stylist and editor.
-Your task is to create a comprehensive style guide for writing a book that will maintain consistent voice, tone, and stylistic elements.
-This guide will be used by AI systems to generate text with a consistent style throughout the book.
-Provide output in JSON format."""
-        
-        # Build the user prompt in parts to avoid f-string backslash issues
-        user_prompt = f"Create a detailed style guide for writing a book with the following details:\n\n"
-        user_prompt += f"Title: {title}\n"
-        user_prompt += f"Genre: {genre}\n"
-        user_prompt += f"Themes: {themes_str}\n\n"
-        
+        # Additional style preferences
+        preferences = {}
         if style_preferences:
-            user_prompt += f"Style preferences:\n{json.dumps(style_preferences, indent=2)}\n\n"
-            
-        if sample_text:
-            user_prompt += f"Sample text demonstrating the desired style:\n{sample_text}\n\n"
-            
-        user_prompt += "The style guide should include:\n"
-        user_prompt += "1. Voice (e.g., formal, conversational, literary)\n"
-        user_prompt += "2. Tone (e.g., serious, humorous, melancholic)\n"
-        user_prompt += "3. Point of view (first person, third person limited, omniscient)\n"
-        user_prompt += "4. Tense (past, present)\n"
-        user_prompt += "5. Sentence structure preferences (e.g., varied, short and punchy, complex and flowing)\n"
-        user_prompt += "6. Description style (e.g., sparse, vivid, metaphorical)\n"
-        user_prompt += "7. Dialogue style (e.g., realistic, stylized, minimal)\n"
-        user_prompt += "8. Specific word choices or phrases to use\n"
-        user_prompt += "9. Specific word choices or phrases to avoid\n"
-        user_prompt += "10. 3-5 short paragraphs exemplifying the style\n\n"
+            preferences = style_preferences
         
-        user_prompt += "Respond with the style guide formatted as a JSON object in this format:\n"
-        user_prompt += "{\n"
-        user_prompt += '  "voice": "string",\n'
-        user_prompt += '  "tone": "string",\n'
-        user_prompt += '  "point_of_view": "string",\n'
-        user_prompt += '  "tense": "string",\n'
-        user_prompt += '  "sentence_structure": "string",\n'
-        user_prompt += '  "description_style": "string",\n'
-        user_prompt += '  "dialogue_style": "string",\n'
-        user_prompt += '  "preferred_words": ["string"],\n'
-        user_prompt += '  "avoided_words": ["string"],\n'
-        user_prompt += '  "examples": ["string"],\n'
-        user_prompt += '  "notes": "string"\n'
-        user_prompt += "}"
-        
+        style_prompt = f"""Generate a comprehensive style guide for a {genre} book titled "{title}".
+
+BOOK DETAILS:
+- Genre: {genre}
+- Target audience: {audience}
+- Setting: {setting}
+- Era: {era}
+
+STYLE PREFERENCES:
+{json.dumps(preferences, indent=2) if preferences else "No specific preferences provided."}
+
+{"SAMPLE TEXT (maintain similar style):" + sample_text if sample_text else ""}
+
+Create a detailed style guide with these sections:
+1. Voice and Tone
+2. Point of View (First person, third person, etc.)
+3. Tense (Past, present)
+4. Dialogue Style
+5. Description Style
+6. Pacing Guidelines
+7. Language Formality
+8. Vocabulary Range
+
+FORMAT THE RESPONSE AS VALID JSON with the following structure:
+{{
+  "voice_and_tone": "Description of the overall voice and tone",
+  "point_of_view": "Recommended POV",
+  "tense": "Recommended tense",
+  "dialogue_style": "Guidelines for dialogue",
+  "description_style": "Guidelines for descriptive passages",
+  "pacing": "Pacing recommendations",
+  "language_formality": "Level of formality",
+  "vocabulary_range": "Vocabulary guidelines"
+}}"""
+
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        max_tokens=2500
-                    )
-                    
-                    style_guide = response["parsed_json"]
-                    logger.info(f"Generated style guide using OpenAI")
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(style_guide),
-                        self.name,
-                        metadata={"type": "style_guide"}
-                    )
-                    
-                    return style_guide
-                except Exception as e:
-                    logger.warning(f"OpenAI style guide generation failed: {e}, falling back to Ollama")
+            # Generate the style guide
+            response = self.openai_client.generate(
+                prompt=style_prompt,
+                model="gpt-4o",
+                format="json"
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt,
-                    format="json"
-                )
-                
-                # Extract and parse JSON from response
-                text_response = response.get("response", "{}")
-                
-                # Extracting the JSON part from the response
-                json_start = text_response.find("{")
-                json_end = text_response.rfind("}") + 1
-                
-                if json_start >= 0 and json_end > json_start:
-                    json_str = text_response[json_start:json_end]
-                    style_guide = json.loads(json_str)
-                else:
-                    raise ValueError("Could not extract valid JSON from Ollama response")
-                
-                logger.info(f"Generated style guide using Ollama")
-                
-                # Store in memory
-                self.memory.add_document(
-                    json.dumps(style_guide),
-                    self.name,
-                    metadata={"type": "style_guide"}
-                )
-                
-                return style_guide
+            # Extract the style guide content
+            try:
+                content = response.get("content", "{}")
+                style_guide = json.loads(content)
+                logger.info(f"Generated style guide for project {self.project_id}")
+            except json.JSONDecodeError:
+                logger.error(f"Error parsing style guide JSON response")
+                # Create a minimal style guide
+                style_guide = {
+                    "voice_and_tone": "Balanced and natural",
+                    "point_of_view": "Third person limited",
+                    "tense": "Past tense",
+                    "dialogue_style": "Natural and character-appropriate",
+                    "description_style": "Vivid but concise",
+                    "pacing": "Varied based on scene tension",
+                    "language_formality": "Moderately formal",
+                    "vocabulary_range": "Accessible with occasional specialized terms"
+                }
             
-            raise Exception("No available AI service (OpenAI or Ollama) to generate style guide")
+            # Store the style guide in memory
+            self.memory.add_document(
+                json.dumps(style_guide),
+                self.name,
+                metadata={
+                    "type": "style_guide", 
+                    "project_id": self.project_id
+                }
+            )
+            
+            return style_guide
             
         except Exception as e:
-            logger.error(f"Style guide generation error: {e}")
-            raise Exception(f"Failed to generate style guide: {e}")
+            logger.error(f"Error generating style guide: {str(e)}")
+            # Return a default style guide
+            default_style = {
+                "voice_and_tone": "Balanced and natural",
+                "point_of_view": "Third person limited",
+                "tense": "Past tense",
+                "dialogue_style": "Natural and character-appropriate",
+                "description_style": "Vivid but concise",
+                "pacing": "Varied based on scene tension",
+                "language_formality": "Moderately formal",
+                "vocabulary_range": "Accessible with occasional specialized terms"
+            }
+            return default_style
     
     def _store_in_memory(self, chapter: Dict[str, Any]) -> None:
         """

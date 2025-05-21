@@ -199,6 +199,11 @@ class ManuscriptWorkflow:
                 memory=self.memory,
                 use_openai=use_openai
             ),
+            "plot": PlotAgent(
+                project_id=project_id,
+                memory=self.memory,
+                use_openai=use_openai
+            ),
             "editorial": EditorialAgent(
                 project_id=project_id,
                 memory=self.memory,
@@ -214,8 +219,7 @@ class ManuscriptWorkflow:
             ),
             "refiner": ManuscriptRefiner(
                 project_id=project_id,
-                memory=self.memory,
-                use_openai=use_openai
+                model_name="gpt-4o"
             )
         }
         
@@ -308,7 +312,10 @@ class ManuscriptWorkflow:
             ideation_data = self.central_hub.aggregate_ideation_data()
             character_result = self.agents["character"].generate_characters(
                 idea=ideation_data.get("selected_idea", {}),
-                world_context={}  # Empty at this stage
+                world_context={},
+                num_characters=5,
+                user_prompt=None,
+                system_prompt=None
             )
             self._complete_stage("character_development")
             
@@ -357,6 +364,17 @@ class ManuscriptWorkflow:
             previous_chapter_content = None
             chapters = []
             
+            # If chapter planning gave no chapters, create at least one fallback chapter
+            if total_chapters == 0:
+                logger.warning("No chapters in chapter plan, creating fallback chapter")
+                fallback_chapter = {
+                    "number": 1,
+                    "title": "Chapter 1",
+                    "summary": "Introduction to the story and characters"
+                }
+                chapter_plan = [fallback_chapter]
+                total_chapters = 1
+            
             for i, chapter in enumerate(chapter_plan):
                 chapter_number = chapter.get("number", i + 1)
                 self._update_stage(f"writing_chapter_{chapter_number}")
@@ -389,6 +407,20 @@ class ManuscriptWorkflow:
             
             # STAGE 8: Final Manuscript Assembly
             self._update_stage("manuscript_assembly")
+            
+            # If we have no chapters at all by this point, create a single fallback chapter
+            if len(chapters) == 0:
+                logger.warning("No chapters generated, creating a fallback chapter for manuscript assembly")
+                fallback_chapter_data = self.agents["chapter_writer"].write_chapter(
+                    chapter_plan={
+                        "number": 1,
+                        "title": "Chapter 1",
+                        "summary": "Introduction to the story and characters"
+                    },
+                    previous_chapter_content=None
+                )
+                chapters.append(fallback_chapter_data)
+            
             manuscript_result = self.agents["manuscript"].assemble_manuscript(chapters=chapters)
             self._complete_stage("manuscript_assembly")
             
@@ -529,7 +561,13 @@ class ManuscriptWorkflow:
         if not self.is_complete:
             return None
         
-        manuscripts = self.memory.query_memory("type:final_manuscript", agent_name="manuscript_agent")
+        # First try with manuscript type
+        manuscripts = self.memory.query_memory("type:manuscript", agent_name="manuscript_agent")
+        
+        # If not found, try with final_manuscript type
+        if not manuscripts or len(manuscripts) == 0:
+            manuscripts = self.memory.query_memory("type:final_manuscript", agent_name="manuscript_agent")
+            
         if manuscripts and len(manuscripts) > 0:
             try:
                 manuscript_data = json.loads(manuscripts[0]["text"])
@@ -670,7 +708,15 @@ class ManuscriptWorkflow:
             if agent_key == "ideation":
                 agent.generate_ideas(self.initial_prompt)
             elif agent_key == "character":
-                agent.generate_characters()
+                # Get idea data to pass to character generation
+                ideation_data = self.central_hub.aggregate_ideation_data()
+                agent.generate_characters(
+                    idea=ideation_data.get("selected_idea", {}),
+                    world_context={},
+                    num_characters=5,
+                    user_prompt=None,
+                    system_prompt=None
+                )
             elif agent_key == "world":
                 agent.generate_world()
             elif agent_key == "research":

@@ -1,6 +1,7 @@
 import logging
 import json
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 
 from models.openai_client import get_openai_client
@@ -111,7 +112,6 @@ Your goal is to address all identified issues while maintaining the author's voi
 The revised chapter should be a complete, polished version ready for final editing."""
         
         # Build the user prompt
-        # Build user prompt in parts to avoid f-string backslash issues
         user_prompt = f"Revise Chapter {chapter_number}: {chapter_title} based on the following review feedback:\n\n"
         user_prompt += "Overall Assessment:\n"
         user_prompt += f"- Rating: {overall_rating}/10\n"
@@ -132,64 +132,36 @@ The revised chapter should be a complete, polished version ready for final editi
         user_prompt += "Provide the complete revised chapter text, ready for final editing."
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        temperature=0.7,
-                        max_tokens=4000
-                    )
-                    
-                    revised_content = response["text"]
-                    logger.info(f"Revised chapter {chapter_id} using OpenAI")
-                    
-                    # Create the revised chapter
-                    revised_chapter = chapter_data.copy()
-                    revised_chapter["content"] = revised_content
-                    revised_chapter["word_count"] = len(revised_content.split())
-                    revised_chapter["revision_notes"] = {
-                        "revision_date": self.memory.metadata.get('timestamp', ''),
-                        "based_on_review": review_data.get("id", "unknown"),
-                        "focus_areas": focus_categories
-                    }
-                    
-                    self._store_in_memory(revised_chapter)
-                    
-                    return revised_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI chapter revision failed: {e}, falling back to Ollama")
+            # Generate revised chapter content
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model="gpt-4o"
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt
-                )
-                
-                revised_content = response.get("response", "")
-                logger.info(f"Revised chapter {chapter_id} using Ollama")
-                
-                # Create the revised chapter
-                revised_chapter = chapter_data.copy()
-                revised_chapter["content"] = revised_content
-                revised_chapter["word_count"] = len(revised_content.split())
-                revised_chapter["revision_notes"] = {
-                    "revision_date": self.memory.metadata.get('timestamp', ''),
-                    "based_on_review": review_data.get("id", "unknown"),
-                    "focus_areas": focus_categories
-                }
-                
-                self._store_in_memory(revised_chapter)
-                
-                return revised_chapter
+            revised_content = response.get("content", "")
+            logger.info(f"Revised chapter {chapter_id} using OpenAI")
             
-            raise Exception("No available AI service (OpenAI or Ollama) to revise chapter")
+            # Create the revised chapter
+            revised_chapter = chapter_data.copy()
+            revised_chapter["content"] = revised_content
+            revised_chapter["word_count"] = len(revised_content.split())
+            revised_chapter["revision_notes"] = {
+                "revision_date": self.memory.get_current_timestamp(),
+                "based_on_review": review_data.get("id", "unknown"),
+                "focus_areas": focus_categories
+            }
+            
+            self._store_in_memory(revised_chapter)
+            
+            return revised_chapter
             
         except Exception as e:
-            logger.error(f"Chapter revision error: {e}")
-            raise Exception(f"Failed to revise chapter: {e}")
+            logger.error(f"Error revising chapter: {str(e)}")
+            # Return original chapter with error note
+            error_chapter = chapter_data.copy()
+            error_chapter["revision_error"] = str(e)
+            return error_chapter
     
     def revise_specific_elements(
         self,
@@ -199,13 +171,13 @@ The revised chapter should be a complete, polished version ready for final editi
         examples: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Revise specific elements of a chapter.
+        Revise specific elements within a chapter (e.g., dialogue, descriptions).
         
         Args:
-            chapter_data: Dictionary containing the written chapter
-            element_type: Type of element to revise (e.g., 'dialogue', 'description', 'pacing')
-            specific_instructions: Specific instructions for revision
-            examples: Optional examples to guide the revision
+            chapter_data: Dictionary containing the chapter
+            element_type: Type of element to revise (e.g., 'dialogue', 'descriptions')
+            specific_instructions: Specific instructions for the revision
+            examples: Optional examples for clarity
             
         Returns:
             Dictionary with the revised chapter
@@ -218,92 +190,58 @@ The revised chapter should be a complete, polished version ready for final editi
         chapter_title = chapter_data.get("title", "Untitled Chapter")
         chapter_content = chapter_data.get("content", "")
         
-        # Format examples if provided
-        examples_text = ""
-        if examples and len(examples) > 0:
-            examples_list = [f"Example {i+1}: {example}" for i, example in enumerate(examples)]
-            examples_text = "\n".join(examples_list)
-        
         # Build the system prompt
-        system_prompt = f"""You are an expert author and editor specializing in revising {element_type} in manuscripts.
-Your task is to revise the {element_type} in a book chapter based on specific instructions.
-Implement the suggested changes while preserving the chapter's overall structure and other elements.
-Your goal is to improve the {element_type} while maintaining the author's voice and the chapter's purpose.
-The revised chapter should be a complete, polished version ready for final editing."""
+        system_prompt = f"""You are an expert literary editor specializing in revising {element_type} in fiction.
+Your task is to revise the {element_type} in a book chapter according to specific instructions.
+Your revisions should enhance the quality of the {element_type} while preserving the overall 
+flow and style of the chapter. Focus only on the {element_type}, leave other elements unchanged.
+Provide the complete revised chapter text."""
         
         # Build the user prompt
-        # Build the user prompt in parts to avoid f-string backslash issues
-        user_prompt = f"Revise the {element_type} in Chapter {chapter_number}: {chapter_title} based on these instructions:\n\n"
-        user_prompt += f"Revision Instructions:\n{specific_instructions}\n\n"
-        
-        if examples_text:
-            user_prompt += f"Examples:\n{examples_text}\n\n"
-            
-        user_prompt += f"Original Chapter Content:\n{chapter_content}\n\n"
-        user_prompt += f"Revise this chapter to improve the {element_type} as specified, while preserving all other elements.\n"
-        user_prompt += "The revised chapter should maintain the same plot points, character development, and other elements\n"
-        user_prompt += f"not related to {element_type}.\n\n"
-        user_prompt += "Provide the complete revised chapter text, ready for final editing."
+        user_prompt = f"""Revise the {element_type} in Chapter {chapter_number}: {chapter_title} according to these instructions:
+
+{specific_instructions}
+
+{"Examples to consider:" if examples else ""}
+{chr(10).join([f"- {ex}" for ex in examples]) if examples else ""}
+
+Original Chapter Content:
+{chapter_content}
+
+Provide the complete revised chapter text, focusing only on improving the {element_type}.
+Maintain the same overall story, structure, and style, changing only what is necessary to address the instructions.
+"""
         
         try:
-            # Try OpenAI first if enabled
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        temperature=0.7,
-                        max_tokens=4000
-                    )
-                    
-                    revised_content = response["text"]
-                    logger.info(f"Revised {element_type} in chapter {chapter_id} using OpenAI")
-                    
-                    # Create the revised chapter
-                    revised_chapter = chapter_data.copy()
-                    revised_chapter["content"] = revised_content
-                    revised_chapter["word_count"] = len(revised_content.split())
-                    revised_chapter["revision_notes"] = {
-                        "revision_date": self.memory.metadata.get('timestamp', ''),
-                        "revision_type": f"{element_type}_revision",
-                        "instructions": specific_instructions
-                    }
-                    
-                    self._store_in_memory(revised_chapter)
-                    
-                    return revised_chapter
-                except Exception as e:
-                    logger.warning(f"OpenAI {element_type} revision failed: {e}, falling back to Ollama")
+            # Generate revised chapter 
+            response = self.openai_client.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model="gpt-4o"
+            )
             
-            # Fall back to Ollama if OpenAI failed or is not enabled
-            if self.use_ollama and self.ollama_client:
-                response = self.ollama_client.generate(
-                    prompt=user_prompt,
-                    system=system_prompt
-                )
-                
-                revised_content = response.get("response", "")
-                logger.info(f"Revised {element_type} in chapter {chapter_id} using Ollama")
-                
-                # Create the revised chapter
-                revised_chapter = chapter_data.copy()
-                revised_chapter["content"] = revised_content
-                revised_chapter["word_count"] = len(revised_content.split())
-                revised_chapter["revision_notes"] = {
-                    "revision_date": self.memory.metadata.get('timestamp', ''),
-                    "revision_type": f"{element_type}_revision",
-                    "instructions": specific_instructions
-                }
-                
-                self._store_in_memory(revised_chapter)
-                
-                return revised_chapter
+            revised_content = response.get("content", "")
+            logger.info(f"Revised {element_type} in chapter {chapter_id} using OpenAI")
             
-            raise Exception(f"No available AI service (OpenAI or Ollama) to revise {element_type}")
+            # Create the revised chapter
+            revised_chapter = chapter_data.copy()
+            revised_chapter["content"] = revised_content
+            revised_chapter["word_count"] = len(revised_content.split())
+            revised_chapter["revision_notes"] = {
+                "revision_date": datetime.now().isoformat(),
+                "revision_type": f"{element_type}_revision",
+                "instructions": specific_instructions
+            }
+            
+            self._store_in_memory(revised_chapter)
+            
+            return revised_chapter
             
         except Exception as e:
-            logger.error(f"{element_type} revision error: {e}")
-            raise Exception(f"Failed to revise {element_type}: {e}")
+            logger.error(f"Error revising {element_type}: {str(e)}")
+            # Return original chapter with error info
+            chapter_data["revision_error"] = str(e)
+            return chapter_data
     
     def revise_consistency_issues(
         self,
@@ -311,184 +249,98 @@ The revised chapter should be a complete, polished version ready for final editi
         consistency_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Revise multiple chapters to address consistency issues.
+        Revise chapters to fix consistency issues.
         
         Args:
             chapters: List of chapter dictionaries
             consistency_analysis: Dictionary with consistency analysis
             
         Returns:
-            List of dictionaries with revised chapters
+            List of revised chapter dictionaries
         """
-        logger.info(f"Revising consistency issues for project {self.project_id}")
+        logger.info(f"Revising consistency issues across {len(chapters)} chapters")
         
-        # Extract priority issues from consistency analysis
-        priority_recommendations = consistency_analysis.get("priority_recommendations", [])
+        # Extract consistency issues
+        issues = consistency_analysis.get("issues", [])
+        if not issues:
+            logger.info("No consistency issues to revise")
+            return chapters
         
-        # Extract issues by category
-        issues_by_category = {}
-        categories = ["character_consistency", "plot_continuity", "setting_consistency", 
-                     "style_tone_consistency", "theme_consistency", "timeline_consistency"]
+        # Organize chapters by number for easier reference
+        chapters_to_revise = sorted(chapters, key=lambda x: x.get("number", 0))
         
-        for category in categories:
-            if category in consistency_analysis:
-                category_data = consistency_analysis[category]
-                issues_by_category[category] = category_data.get("issues", [])
-        
-        # Prioritize a few chapters that need the most work
-        chapters_to_revise = []
-        for chapter in chapters:
-            chapter_id = chapter.get("id", "unknown")
+        # Format the consistency issues for the prompt
+        issues_text = ""
+        for i, issue in enumerate(issues):
+            issue_type = issue.get("type", "Unknown")
+            description = issue.get("description", "")
+            affected_chapters = issue.get("affected_chapters", [])
             
-            # Check if chapter is mentioned in issues
-            mentioned_count = 0
-            for category, issues in issues_by_category.items():
-                for issue in issues:
-                    example = issue.get("example", "").lower()
-                    chapter_title = chapter.get('title', '').lower()
-                    if f"chapter {chapter.get('number', 0)}" in example or (chapter_title and chapter_title in example):
-                        mentioned_count += 1
-            
-            if mentioned_count > 0:
-                chapters_to_revise.append({
-                    "chapter": chapter,
-                    "priority": mentioned_count
-                })
+            affected_str = "All chapters" if not affected_chapters else f"Chapters {', '.join(map(str, affected_chapters))}"
+            issues_text += f"{i+1}. {issue_type}: {description}\n   Affects: {affected_str}\n\n"
         
-        # Sort by priority and limit to top 3
-        chapters_to_revise.sort(key=lambda x: x["priority"], reverse=True)
-        chapters_to_revise = chapters_to_revise[:3]
-        
+        # Revise each chapter
         revised_chapters = []
         
-        # Revise each prioritized chapter
-        for chapter_info in chapters_to_revise:
-            chapter = chapter_info["chapter"]
+        for chapter in chapters_to_revise:
             chapter_id = chapter.get("id", "unknown")
             chapter_number = chapter.get("number", 0)
-            chapter_title = chapter.get("title", "Untitled Chapter")
+            chapter_title = chapter.get("title", f"Chapter {chapter_number}")
             chapter_content = chapter.get("content", "")
             
-            # Collect relevant issues for this chapter
-            relevant_issues = []
-            for category, issues in issues_by_category.items():
-                category_name = category.replace("_", " ").title()
-                for issue in issues:
-                    example = issue.get("example", "")
-                    if f"chapter {chapter_number}" in example.lower() or chapter_title.lower() in example.lower():
-                        relevant_issues.append({
-                            "category": category_name,
-                            "description": issue.get("description", ""),
-                            "example": example,
-                            "suggestion": issue.get("suggestion", "")
-                        })
+            # Build system prompt
+            system_prompt = """You are an expert literary editor specializing in maintaining consistency across a manuscript.
+Your task is to revise a chapter to fix consistency issues identified in a manuscript-wide analysis.
+Your revisions should address only the consistency issues, while preserving the chapter's original style, 
+structure, and content as much as possible. Focus on making the minimal necessary changes to resolve the issues.
+Provide the complete revised chapter text."""
             
-            # If no specific issues identified, use general recommendations
-            if not relevant_issues:
-                for category, issues in issues_by_category.items():
-                    category_name = category.replace("_", " ").title()
-                    for issue in issues[:1]:  # Take just the first issue from each category
-                        relevant_issues.append({
-                            "category": category_name,
-                            "description": issue.get("description", ""),
-                            "example": issue.get("example", ""),
-                            "suggestion": issue.get("suggestion", "")
-                        })
-            
-            # Format issues for the prompt
-            issues_text = ""
-            if relevant_issues:
-                issues_list = []
-                for issue in relevant_issues:
-                    category = issue.get("category", "")
-                    desc = issue.get("description", "")
-                    example = issue.get("example", "")
-                    suggestion = issue.get("suggestion", "")
-                    issues_list.append(f"- {category}: {desc}\n  Example: {example}\n  Suggestion: {suggestion}")
-                
-                issues_text = "\n".join(issues_list)
-            
-            # Build the system prompt
-            system_prompt = """You are an expert author and editor specializing in manuscript consistency.
-Your task is to revise a book chapter to address consistency issues across the entire manuscript.
-Implement changes to improve character consistency, plot continuity, setting consistency, style/tone, and timeline accuracy.
-Your goal is to make this chapter work seamlessly with the rest of the book.
-The revised chapter should be a complete, polished version ready for final editing."""
-            
-            # Build the user prompt
-            user_prompt = f"""Revise Chapter {chapter_number}: {chapter_title} to address these consistency issues:
+            # Build user prompt
+            user_prompt = f"""Revise Chapter {chapter_number}: {chapter_title} to fix the following consistency issues identified across the manuscript:
 
-Consistency Issues to Address:
+CONSISTENCY ISSUES:
 {issues_text}
 
-Original Chapter Content:
+ORIGINAL CHAPTER CONTENT:
 {chapter_content}
 
-Revise this chapter to resolve the identified consistency issues while preserving its strengths and core elements.
-Make specific changes to align this chapter with the rest of the manuscript for improved consistency.
-The revised chapter should maintain the same general plot points but with corrections to characters, settings,
-timeline, and style to ensure consistency across the entire book.
-
-Provide the complete revised chapter text, ready for final editing.
+Revise this chapter to fix any relevant consistency issues while preserving its original structure and style.
+Focus only on the consistency issues mentioned - do not make other editorial changes.
+Provide the complete revised text of the chapter.
 """
             
             try:
-                # Try OpenAI first if enabled
-                if self.use_openai and self.openai_client:
-                    try:
-                        response = self.openai_client.generate(
-                            prompt=user_prompt,
-                            system_prompt=system_prompt,
-                            temperature=0.7,
-                            max_tokens=4000
-                        )
-                        
-                        revised_content = response["text"]
-                        logger.info(f"Revised consistency issues in chapter {chapter_id} using OpenAI")
-                        
-                        # Create the revised chapter
-                        revised_chapter = chapter.copy()
-                        revised_chapter["content"] = revised_content
-                        revised_chapter["word_count"] = len(revised_content.split())
-                        revised_chapter["revision_notes"] = {
-                            "revision_date": self.memory.metadata.get('timestamp', ''),
-                            "revision_type": "consistency_revision",
-                            "addressed_issues": [issue.get("description", "") for issue in relevant_issues]
-                        }
-                        
-                        self._store_in_memory(revised_chapter)
-                        revised_chapters.append(revised_chapter)
-                        
-                    except Exception as e:
-                        logger.warning(f"OpenAI consistency revision failed: {e}, falling back to Ollama")
+                # Generate revised chapter
+                response = self.openai_client.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model="gpt-4o"
+                )
                 
-                # Fall back to Ollama if OpenAI failed or is not enabled
-                if (len(revised_chapters) < len(chapters_to_revise)) and self.use_ollama and self.ollama_client:
-                    response = self.ollama_client.generate(
-                        prompt=user_prompt,
-                        system=system_prompt
-                    )
-                    
-                    revised_content = response.get("response", "")
-                    logger.info(f"Revised consistency issues in chapter {chapter_id} using Ollama")
-                    
-                    # Create the revised chapter
-                    revised_chapter = chapter.copy()
-                    revised_chapter["content"] = revised_content
-                    revised_chapter["word_count"] = len(revised_content.split())
-                    revised_chapter["revision_notes"] = {
-                        "revision_date": self.memory.metadata.get('timestamp', ''),
-                        "revision_type": "consistency_revision",
-                        "addressed_issues": [issue.get("description", "") for issue in relevant_issues]
-                    }
-                    
-                    self._store_in_memory(revised_chapter)
-                    revised_chapters.append(revised_chapter)
+                revised_content = response.get("content", "")
+                logger.info(f"Revised consistency issues in chapter {chapter_id} using OpenAI")
+                
+                # Create the revised chapter
+                revised_chapter = chapter.copy()
+                revised_chapter["content"] = revised_content
+                revised_chapter["word_count"] = len(revised_content.split())
+                revised_chapter["revision_notes"] = {
+                    "revision_date": datetime.now().isoformat(),
+                    "revision_type": "consistency_revision",
+                    "consistency_issues": issues
+                }
+                
+                self._store_in_memory(revised_chapter)
+                revised_chapters.append(revised_chapter)
                 
             except Exception as e:
-                logger.error(f"Consistency revision error for chapter {chapter_id}: {e}")
-                continue
+                logger.error(f"Error revising consistency in chapter {chapter_id}: {str(e)}")
+                # Add the original chapter with error info
+                error_chapter = chapter.copy()
+                error_chapter["revision_error"] = str(e)
+                revised_chapters.append(error_chapter)
         
+        logger.info(f"Completed consistency revisions for {len(revised_chapters)} chapters")
         return revised_chapters
     
     def _store_in_memory(self, chapter: Dict[str, Any]) -> None:

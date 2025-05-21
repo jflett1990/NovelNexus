@@ -100,7 +100,8 @@ def add_header(response):
 @app.route('/')
 def home():
     """Home page with form to generate new manuscript."""
-    return render_template('index.html')
+    projects = session.get('projects', [])
+    return render_template('index.html', projects=projects)
 
 # Dashboard page
 @app.route('/dashboard/<project_id>')
@@ -237,11 +238,11 @@ def get_dashboard_data(project_id):
             project_status.update({
                 'is_running': workflow.is_running,
                 'is_complete': workflow.is_complete,
-                'current_agent': workflow.current_agent,
+                'current_agent': workflow.current_agent if hasattr(workflow, 'current_agent') else None,
                 'current_stage': workflow.current_stage,
                 'completed_stages': workflow.completed_stages,
                 'progress': workflow.get_progress(),
-                'thread_health': workflow.get_thread_health(),
+                'thread_health': workflow.thread_health() if hasattr(workflow, 'thread_health') else None,
                 'project_id': project_id
             })
             
@@ -338,7 +339,7 @@ def get_project_logs(project_id):
 @app.route('/api/stream-logs/<project_id>', methods=['GET'])
 def stream_logs(project_id):
     """Server-Sent Events endpoint for streaming logs."""
-    def generate():
+    def stream_generate():
         # Stream logs with SSE format
         last_sent_idx = 0
         while True:
@@ -355,7 +356,7 @@ def stream_logs(project_id):
             time.sleep(1)
     
     response = app.response_class(
-        generate(),
+        stream_generate(),
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'}
     )
@@ -414,6 +415,11 @@ def trigger_refinement():
         }), 500
 
 # Generate manuscript endpoint
+@app.route('/generate-test', methods=['GET'])
+def generate_test():
+    """Test GET handling."""
+    return "This is a test of GET handling for the /generate-test endpoint"
+
 @app.route('/generate', methods=['GET', 'POST'])
 def generate():
     """Generate a new manuscript."""
@@ -444,7 +450,6 @@ def generate():
             "target_length": target_length,
             "complexity": complexity,
             "use_openai": True,   # Using OpenAI as primary service
-            "use_ollama": False,  # Disable Ollama
             "initial_prompt": initial_prompt
         }
         
@@ -453,7 +458,12 @@ def generate():
         # Create workflow
         workflow = ManuscriptWorkflow(
             project_id=project_id,
-            **config
+            title=title,
+            genre=genre,
+            target_length=target_length,
+            complexity=complexity,
+            initial_prompt=initial_prompt,
+            use_openai=True
         )
         logger.info(f"Workflow initialized for project {project_id}")
         
@@ -465,21 +475,51 @@ def generate():
         workflow.start()
         logger.info(f"Workflow started for project {project_id}")
         
+        # Initialize the projects list in session if it doesn't exist
+        if 'projects' not in session:
+            session['projects'] = []
+            
         # Add to session
-        if 'projects' in session:
-            projects = session['projects']
-            projects.append({
-                "id": project_id,
-                "title": title or "Untitled",
-                "genre": genre,
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M")
-            })
-            session['projects'] = projects
+        projects = session['projects']
+        projects.append({
+            "id": project_id,
+            "title": title or "Untitled",
+            "genre": genre,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        session['projects'] = projects
         
         logger.info(f"{project_id}: Manuscript generation started")
         
-        # Redirect to dashboard
-        return redirect(url_for('dashboard', project_id=project_id))
+        # Instead of redirecting to dashboard, show a simple status page
+        return f"""
+        <html>
+        <head>
+            <title>Manuscript Generation Started</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                pre {{ background-color: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Manuscript Generation Started</h1>
+                <p>Your manuscript generation has been started successfully.</p>
+                <h2>Project Details</h2>
+                <ul>
+                    <li><strong>Project ID:</strong> {project_id}</li>
+                    <li><strong>Title:</strong> {title or "Untitled"}</li>
+                    <li><strong>Genre:</strong> {genre}</li>
+                </ul>
+                <p>The manuscript generation is running in the background. You can check the app.log file for progress updates.</p>
+                <p>To view the project status: <a href="/project-status/{project_id}">Click here</a></p>
+                <p>To start a new manuscript, <a href="/generate">click here</a>.</p>
+                <p>To return to homepage, <a href="/">click here</a>.</p>
+            </div>
+        </body>
+        </html>
+        """
     except Exception as e:
         logger.error(f"Error starting generation: {str(e)}", exc_info=True)
         flash(f"Error: {str(e)}", 'error')
@@ -527,8 +567,12 @@ def reset_thread(project_id):
                     project_id=project_id,
                     title="",
                     genre="",
+                    target_length="medium",
+                    complexity="medium",
                     embedding_model=EMBEDDING_MODEL,
-                    use_openai=True
+                    use_openai=True,
+                    use_gpu=False,
+                    initial_prompt=""
                 )
                 
                 # Store in active workflows
@@ -555,6 +599,133 @@ def reset_thread(project_id):
             "error": str(e)
         })
 
+# Add after the generate function
+
+@app.route('/project-status/<project_id>')
+def project_status(project_id):
+    """Show status of a project without using the dashboard."""
+    try:
+        if project_id in active_workflows:
+            workflow = active_workflows[project_id]
+            
+            # Get status directly from the workflow
+            status = {
+                "is_running": workflow.is_running,
+                "is_complete": workflow.is_complete,
+                "current_stage": workflow.current_stage,
+                "completed_stages": workflow.completed_stages,
+                "errors": workflow.errors
+            }
+            
+            # Get any available content from the workflow
+            content = ""
+            if workflow.is_complete:
+                try:
+                    # If the workflow is complete, try to get the final manuscript
+                    manuscript = workflow.get_final_manuscript()
+                    if manuscript and "content" in manuscript:
+                        content = manuscript["content"]
+                except Exception as e:
+                    logger.error(f"Error getting manuscript: {str(e)}")
+                    content = f"Error getting manuscript: {str(e)}"
+            
+            # Get all relevant logs for this project
+            project_logs = [log for log in log_buffer if project_id in str(log['message'])]
+            log_entries = [f"{log['timestamp']} - {log['level']} - {log['message']}" for log in project_logs]
+            
+            # Render a simple status page
+            return f"""
+            <html>
+            <head>
+                <title>Project Status</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; }}
+                    .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; margin-bottom: 20px; }}
+                    pre {{ background-color: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+                    .logs {{ max-height: 400px; overflow-y: auto; }}
+                </style>
+                <meta http-equiv="refresh" content="10">
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Project Status: {project_id}</h1>
+                    <h2>Status</h2>
+                    <ul>
+                        <li><strong>Running:</strong> {status['is_running']}</li>
+                        <li><strong>Complete:</strong> {status['is_complete']}</li>
+                        <li><strong>Current Stage:</strong> {status['current_stage'] or 'None'}</li>
+                        <li><strong>Completed Stages:</strong> {', '.join(status['completed_stages'])}</li>
+                    </ul>
+                    
+                    <h2>Errors</h2>
+                    <pre>{json.dumps(status['errors'], indent=2) if status['errors'] else 'No errors'}</pre>
+                    
+                    <h2>Recent Logs</h2>
+                    <div class="logs">
+                        <pre>{'\\n'.join(log_entries[-50:])}</pre>
+                    </div>
+                    
+                    {f'<h2>Final Manuscript</h2><pre>{content}</pre>' if content else ''}
+                    
+                    <p>This page will refresh automatically every 10 seconds.</p>
+                    <p>
+                        <a href="/view-generated-text/{project_id}">View All Generated Text</a> | 
+                        <a href="/generate">Start New Project</a> | 
+                        <a href="/">Home</a>
+                    </p>
+                    {f'<p><a href="/view-manuscript/{project_id}">View Full Manuscript</a></p>' if status['is_complete'] else ''}
+                </div>
+            </body>
+            </html>
+            """
+        else:
+            return f"""
+            <html>
+            <head>
+                <title>Project Not Found</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                    .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Project Not Found</h1>
+                    <p>The project with ID {project_id} was not found in active workflows.</p>
+                    <p>This could be because:</p>
+                    <ul>
+                        <li>The server was restarted and active workflows were cleared</li>
+                        <li>The project ID is incorrect</li>
+                        <li>The project has been completed and removed from active workflows</li>
+                    </ul>
+                    <p><a href="/view-generated-text/{project_id}">View Generated Text</a> | <a href="/generate">Start New Project</a> | <a href="/">Home</a></p>
+                </div>
+            </body>
+            </html>
+            """
+    except Exception as e:
+        logger.error(f"Error displaying project status: {str(e)}", exc_info=True)
+        return f"""
+        <html>
+        <head>
+            <title>Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                .error {{ color: red; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Error Displaying Project Status</h1>
+                <p class="error">{str(e)}</p>
+                <pre>{traceback.format_exc()}</pre>
+                <p><a href="/view-generated-text/{project_id}">View Generated Text</a> | <a href="/generate">Start New Project</a> | <a href="/">Home</a></p>
+            </div>
+        </body>
+        </html>
+        """
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='AI Manuscript Generator')
     parser.add_argument('--port', type=int, default=int(os.environ.get("PORT", 5000)), help='Port to run the server on')
@@ -564,3 +735,346 @@ if __name__ == "__main__":
     
     print(f"Starting server on {args.host}:{args.port} with debug={args.debug}")
     app.run(host=args.host, port=args.port, debug=args.debug)
+
+# Add API endpoint to view the manuscript
+@app.route('/api/manuscript/<project_id>', methods=['GET'])
+def get_manuscript(project_id):
+    """Retrieve the manuscript for a given project."""
+    try:
+        # Try to get the workflow from active workflows
+        if project_id in active_workflows:
+            workflow = active_workflows[project_id]
+            
+            # Check if the workflow is complete
+            if not workflow.is_complete:
+                return jsonify({
+                    "success": False,
+                    "error": "Manuscript generation is still in progress",
+                    "status": workflow.current_stage,
+                    "progress": workflow.get_progress()
+                }), 400
+            
+            # Get the manuscript
+            manuscript = workflow.get_final_manuscript()
+            if not manuscript:
+                return jsonify({
+                    "success": False,
+                    "error": "Manuscript not found or not yet generated"
+                }), 404
+            
+            # Return the manuscript
+            return jsonify({
+                "success": True,
+                "title": manuscript.get("title", "Untitled"),
+                "chapters": manuscript.get("chapters", []),
+                "word_count": manuscript.get("word_count", 0),
+                "content": manuscript.get("content", "")
+            })
+        
+        # If not in active workflows, try to retrieve from memory
+        from memory.dynamic_memory import DynamicMemory
+        from models.openai_client import get_openai_client
+        
+        # Initialize memory with embedding function using OpenAI
+        openai_client = get_openai_client()
+        embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+        memory = DynamicMemory(project_id, embedding_function)
+        
+        # Query memory for manuscript
+        manuscript_docs = memory.query_memory("type:manuscript", top_k=1)
+        
+        # If not found, try with final_manuscript type
+        if not manuscript_docs or len(manuscript_docs) == 0:
+            manuscript_docs = memory.query_memory("type:final_manuscript", top_k=1)
+            
+        if not manuscript_docs or len(manuscript_docs) == 0:
+            return jsonify({
+                "success": False,
+                "error": "Manuscript not found in memory"
+            }), 404
+        
+        # Parse the manuscript data
+        try:
+            manuscript_data = json.loads(manuscript_docs[0]['text'])
+            
+            # Return the manuscript
+            return jsonify({
+                "success": True,
+                "title": manuscript_data.get("title", "Untitled"),
+                "chapters": manuscript_data.get("chapters", []),
+                "word_count": manuscript_data.get("word_count", 0),
+                "content": manuscript_data.get("content", "")
+            })
+        except json.JSONDecodeError:
+            # If not JSON, return the raw document
+            return jsonify({
+                "success": True,
+                "content": manuscript_docs[0]['text'],
+                "title": "Untitled",
+                "chapters": [],
+                "word_count": len(manuscript_docs[0]['text'].split())
+            })
+        
+    except Exception as e:
+        logger.error(f"Error retrieving manuscript: {str(e)}", exc_info=True)
+        return jsonify({
+            "success": False, 
+            "error": str(e)
+        }), 500
+
+# Add a route to view the manuscript in a nice format
+@app.route('/view-manuscript/<project_id>')
+def view_manuscript(project_id):
+    """View the manuscript in a nice format."""
+    try:
+        # Try to get the workflow from active workflows
+        manuscript = None
+        title = "Untitled"
+        
+        if project_id in active_workflows:
+            workflow = active_workflows[project_id]
+            
+            # Check if the workflow is complete
+            if not workflow.is_complete:
+                return f"""
+                <html>
+                <head>
+                    <title>Manuscript Not Ready</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                        .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>Manuscript Not Ready</h1>
+                        <p>The manuscript generation is still in progress.</p>
+                        <p>Current stage: {workflow.current_stage}</p>
+                        <p>Progress: {workflow.get_progress()}%</p>
+                        <p><a href="/project-status/{project_id}">View Project Status</a></p>
+                    </div>
+                </body>
+                </html>
+                """
+            
+            # Get the manuscript
+            manuscript = workflow.get_final_manuscript()
+            if manuscript:
+                title = manuscript.get("title", "Untitled")
+        
+        # If not found in active workflows or no manuscript, try to retrieve from memory
+        if not manuscript:
+            from memory.dynamic_memory import DynamicMemory
+            from models.openai_client import get_openai_client
+            
+            # Initialize memory with embedding function using OpenAI
+            openai_client = get_openai_client()
+            embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+            memory = DynamicMemory(project_id, embedding_function)
+            
+            # Query memory for manuscript
+            manuscript_docs = memory.query_memory("type:manuscript", top_k=1)
+            
+            # If not found, try with final_manuscript type
+            if not manuscript_docs or len(manuscript_docs) == 0:
+                manuscript_docs = memory.query_memory("type:final_manuscript", top_k=1)
+            
+            if not manuscript_docs or len(manuscript_docs) == 0:
+                return f"""
+                <html>
+                <head>
+                    <title>Manuscript Not Found</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                        .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>Manuscript Not Found</h1>
+                        <p>The manuscript for project {project_id} was not found.</p>
+                        <p><a href="/project-status/{project_id}">View Project Status</a></p>
+                    </div>
+                </body>
+                </html>
+                """
+            
+            # Parse the manuscript data
+            try:
+                manuscript = json.loads(manuscript_docs[0]['text'])
+                title = manuscript.get("title", "Untitled")
+            except json.JSONDecodeError:
+                # If not JSON, create a simple manuscript object
+                manuscript = {
+                    "content": manuscript_docs[0]['text'],
+                    "title": "Untitled",
+                    "chapters": []
+                }
+        
+        # Format the manuscript content
+        content = manuscript.get("content", "")
+        chapters = manuscript.get("chapters", [])
+        word_count = manuscript.get("word_count", len(content.split()))
+        
+        # Render the manuscript
+        return f"""
+        <html>
+        <head>
+            <title>{title}</title>
+            <style>
+                body {{ font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
+                .container {{ padding: 20px; }}
+                h1 {{ text-align: center; margin-bottom: 30px; }}
+                h2 {{ text-align: center; margin-top: 40px; }}
+                .chapter {{ margin-bottom: 40px; }}
+                .chapter-title {{ text-align: center; margin-bottom: 20px; }}
+                .manuscript {{ white-space: pre-wrap; }}
+                .meta {{ text-align: center; color: #666; margin-bottom: 30px; }}
+                .nav {{ margin-top: 30px; text-align: center; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>{title}</h1>
+                <div class="meta">Word Count: {word_count}</div>
+                
+                <div class="manuscript">
+                {content}
+                </div>
+                
+                <div class="nav">
+                    <p><a href="/project-status/{project_id}">Back to Project Status</a> | <a href="/">Home</a></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+    except Exception as e:
+        logger.error(f"Error viewing manuscript: {str(e)}", exc_info=True)
+        return f"""
+        <html>
+        <head>
+            <title>Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
+                .error {{ color: red; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Error Viewing Manuscript</h1>
+                <p class="error">{str(e)}</p>
+                <pre>{traceback.format_exc()}</pre>
+                <p><a href="/project-status/{project_id}">Back to Project Status</a> | <a href="/">Home</a></p>
+            </div>
+        </body>
+        </html>
+        """
+
+# Add a route to view the generated text in a simple format
+@app.route('/view-generated-text/<project_id>')
+def view_generated_text(project_id):
+    """View all generated text for a specific project in a simple format."""
+    try:
+        # Initialize memory with embedding function using OpenAI
+        from memory.dynamic_memory import DynamicMemory
+        from models.openai_client import get_openai_client
+        
+        openai_client = get_openai_client()
+        embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+        memory = DynamicMemory(project_id, embedding_function)
+        
+        # Collect all generated content from various stages
+        generated_content = []
+        
+        # Get various types of generated content
+        stages = [
+            {"name": "Manuscript", "query": "type:manuscript", "agent": None},
+            {"name": "Final Manuscript", "query": "type:final_manuscript", "agent": None},
+            {"name": "Chapter Content", "query": "type:chapter_content", "agent": "writing_agent"},
+            {"name": "Edited Chapter", "query": "type:edited_chapter", "agent": "editorial_agent"},
+            {"name": "Story Outline", "query": "type:outline", "agent": "outlining_agent"},
+            {"name": "Character Development", "query": "type:character", "agent": "character_agent"},
+            {"name": "Ideas", "query": "type:idea", "agent": "ideation_agent"}
+        ]
+        
+        for stage in stages:
+            agent_name = stage.get("agent")
+            query = stage.get("query")
+            name = stage.get("name")
+            
+            if agent_name:
+                docs = memory.query_memory(query, agent_name=agent_name, top_k=10, threshold=0.1)
+            else:
+                docs = memory.query_memory(query, top_k=10, threshold=0.1)
+            
+            if docs:
+                for doc in docs:
+                    try:
+                        content = doc['text']
+                        # If it's JSON, try to parse it for better display
+                        try:
+                            json_content = json.loads(content)
+                            if isinstance(json_content, dict) and "content" in json_content:
+                                content = json_content["content"]
+                            elif isinstance(json_content, dict) and "chapters" in json_content:
+                                chapters_content = ""
+                                for chapter in json_content.get("chapters", []):
+                                    chapter_title = chapter.get("title", "")
+                                    chapter_content = chapter.get("content", "")
+                                    chapters_content += f"## {chapter_title}\n\n{chapter_content}\n\n"
+                                content = chapters_content
+                        except json.JSONDecodeError:
+                            # Not JSON, use as is
+                            pass
+                            
+                        metadata = doc.get('metadata', {})
+                        timestamp = metadata.get('timestamp', 'Unknown time')
+                        
+                        generated_content.append({
+                            "name": name,
+                            "content": content,
+                            "metadata": metadata,
+                            "timestamp": timestamp
+                        })
+                    except Exception as e:
+                        logger.error(f"Error processing document: {str(e)}")
+                        continue
+        
+        # Sort by timestamp if available
+        generated_content.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        # Render the content
+        return render_template(
+            'generated_text.html',
+            title=f"Generated Text for Project {project_id}",
+            project_id=project_id,
+            content=generated_content
+        )
+    
+    except Exception as e:
+        logger.error(f"Error viewing generated text: {str(e)}", exc_info=True)
+        error_html = f"""
+        <html>
+        <head>
+            <title>Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .error {{ border: 1px solid #ff0000; padding: 20px; border-radius: 5px; background-color: #ffeeee; }}
+                pre {{ white-space: pre-wrap; background-color: #f5f5f5; padding: 10px; }}
+            </style>
+        </head>
+        <body>
+            <div class="error">
+                <h1>Error Viewing Generated Text</h1>
+                <p>{str(e)}</p>
+                <h2>Stack Trace:</h2>
+                <pre>{traceback.format_exc()}</pre>
+                <p><a href="/">Return to Home</a></p>
+            </div>
+        </body>
+        </html>
+        """
+        return error_html
