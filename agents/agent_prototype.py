@@ -1,12 +1,13 @@
 """
-Prototype agent implementation that demonstrates how to use the model selection utility.
-This can be used as a reference for updating other agents.
+Base agent implementation that all agents should inherit from.
+Provides common functionality and required interface.
 """
 
 import logging
 import json
 import re
 import time
+from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Union
 
@@ -17,15 +18,19 @@ from utils.model_utils import select_model
 
 logger = logging.getLogger(__name__)
 
-class AgentPrototype:
-    """Base class for all agents in the system."""
+class AbstractAgent(ABC):
+    """
+    Base abstract class for all agents in the system.
+    All agent classes should inherit from this class.
+    """
     
     def __init__(
         self,
         project_id: str,
-        memory,
-        name: str = "agent",
-        use_openai: bool = True
+        memory: DynamicMemory,
+        use_openai: bool = True,
+        name: Optional[str] = None,
+        stage: Optional[str] = None
     ):
         """
         Initialize the agent.
@@ -33,16 +38,36 @@ class AgentPrototype:
         Args:
             project_id: Project identifier
             memory: Dynamic memory instance
-            name: Agent name for logging
             use_openai: Whether to use OpenAI models
+            name: Agent name (defaults to class name in lowercase)
+            stage: Pipeline stage name (defaults to name without "_agent")
         """
         self.project_id = project_id
         self.memory = memory
-        self.name = name
         self.use_openai = use_openai
+        
+        # Set agent name (default to class name if not provided)
+        self.name = name if name else self.__class__.__name__.lower()
+        
+        # Set stage name (default to agent name without "_agent")
+        self.stage = stage if stage else self.name.replace("_agent", "")
         
         # Initialize clients
         self.openai_client = get_openai_client() if use_openai else None
+    
+    @abstractmethod
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        """
+        Main execution method that all agents must implement.
+        This is the primary entry point for running the agent.
+        
+        Args:
+            **kwargs: Agent-specific parameters
+            
+        Returns:
+            Dictionary with execution results
+        """
+        pass
     
     def generate(
         self,
@@ -50,7 +75,9 @@ class AgentPrototype:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         json_format: bool = False,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        max_retries: int = 3,
+        retry_delay: int = 2
     ) -> Dict[str, Any]:
         """
         Generate text using available models.
@@ -61,20 +88,27 @@ class AgentPrototype:
             temperature: Controls randomness (0-1)
             json_format: Whether to request JSON output
             conversation_history: Optional conversation history
+            max_retries: Maximum number of retry attempts
+            retry_delay: Delay between retries in seconds
             
         Returns:
             Dictionary with generation results
         """
-        # Try OpenAI first if enabled
-        if self.use_openai and self.openai_client:
+        for attempt in range(max_retries):
             try:
-                return self._generate_with_openai(prompt, system_prompt, temperature, json_format, conversation_history)
+                # Try OpenAI if enabled
+                if self.use_openai and self.openai_client:
+                    return self._generate_with_openai(prompt, system_prompt, temperature, json_format, conversation_history)
+                else:
+                    logger.error(f"No available AI service (OpenAI disabled)")
+                    raise Exception("No available AI service (OpenAI disabled)")
             except Exception as e:
-                logger.error(f"OpenAI generation failed: {e}")
-                raise Exception(f"No available AI service - OpenAI failed: {e}")
-        else:
-            logger.error("No available AI service (OpenAI)")
-            raise Exception("No available AI service (OpenAI)")
+                logger.warning(f"Generation attempt {attempt+1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"All generation attempts failed: {str(e)}")
+                    raise Exception(f"Failed to generate content after {max_retries} attempts: {str(e)}")
     
     def _generate_with_openai(
         self, 
@@ -138,24 +172,60 @@ class AgentPrototype:
                 logger.warning(f"Failed to extract JSON from response")
                 return None
     
-    def add_to_memory(self, text: str, metadata: Dict[str, Any] = None) -> bool:
+    def add_to_memory(
+        self, 
+        text: str, 
+        metadata: Optional[Dict[str, Any]] = None, 
+        doc_id: Optional[str] = None
+    ) -> Optional[str]:
         """
         Add content to the agent's memory.
         
         Args:
             text: Text content to add
             metadata: Optional metadata dictionary
+            doc_id: Optional document ID
             
         Returns:
-            True if successfully added, False otherwise
+            Document ID if successfully added, None otherwise
         """
         metadata = metadata or {}
         metadata["agent"] = self.name
         metadata["timestamp"] = datetime.now().isoformat()
         
         try:
-            self.memory.add_document(text, self.name, metadata)
-            return True
+            return self.memory.add_document(text, self.name, metadata, doc_id)
         except Exception as e:
             logger.error(f"Error adding to memory: {e}")
-            return False 
+            return None
+            
+    def get_memory(self, query: str, top_k: int = 5, threshold: float = 0.7) -> List[Dict[str, Any]]:
+        """
+        Query the agent's memory.
+        
+        Args:
+            query: Search query
+            top_k: Maximum number of results
+            threshold: Similarity threshold (0-1)
+            
+        Returns:
+            List of matching documents
+        """
+        try:
+            return self.memory.query_memory(query, self.name, top_k, threshold)
+        except Exception as e:
+            logger.error(f"Error querying memory: {e}")
+            return []
+            
+    def get_all_memory(self) -> List[Dict[str, Any]]:
+        """
+        Get all documents from this agent's memory.
+        
+        Returns:
+            List of all documents
+        """
+        try:
+            return self.memory.get_agent_memory(self.name)
+        except Exception as e:
+            logger.error(f"Error getting all memory: {e}")
+            return [] 

@@ -3,6 +3,7 @@ import logging
 import json
 import argparse
 import traceback
+import uuid
 import sys
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, make_response
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -12,6 +13,63 @@ from models.openai_models import EMBEDDING_MODEL
 from collections import deque
 from datetime import datetime
 import dotenv
+
+# Configure Celery for background tasks
+try:
+    from celery import Celery
+    
+    # Initialize Celery
+    celery_enabled = True
+    celery_app = Celery('novelNexus')
+    
+    # Configure Celery - using Redis as a broker by default
+    celery_broker = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+    celery_backend = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+    
+    celery_app.conf.update({
+        'broker_url': celery_broker,
+        'result_backend': celery_backend,
+        'task_serializer': 'json',
+        'accept_content': ['json'],
+        'result_serializer': 'json',
+        'enable_utc': True,
+        'task_track_started': True,
+        'task_time_limit': 18000,  # 5 hours max task time
+        'worker_max_tasks_per_child': 1  # Avoid memory leaks
+    })
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Celery initialized with broker: {celery_broker}")
+    
+    @celery_app.task(bind=True)
+    def run_workflow_task(self, project_id, **config):
+        """Celery task to run the manuscript workflow asynchronously."""
+        try:
+            logger.info(f"Starting async workflow for project {project_id}")
+            # Initialize logging for this task
+            task_logger = logging.getLogger(f"workflow.task.{project_id}")
+            
+            # Initialize and run workflow
+            workflow = ManuscriptWorkflow(project_id=project_id, **config)
+            workflow.execute()
+            
+            task_logger.info(f"Completed async workflow for project {project_id}")
+            return {"status": "success", "project_id": project_id}
+        except Exception as e:
+            logger.error(f"Error in async workflow for project {project_id}: {str(e)}", exc_info=True)
+            return {
+                "status": "error", 
+                "project_id": project_id,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+            
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Celery not installed. Async processing will be disabled.")
+    celery_enabled = False
+    celery_app = None
+    run_workflow_task = None
 
 # Configure logging first
 logging.basicConfig(
@@ -415,115 +473,102 @@ def trigger_refinement():
         }), 500
 
 # Generate manuscript endpoint
-@app.route('/generate-test', methods=['GET'])
-def generate_test():
-    """Test GET handling."""
-    return "This is a test of GET handling for the /generate-test endpoint"
-
 @app.route('/generate', methods=['GET', 'POST'])
 def generate():
     """Generate a new manuscript."""
-    # For GET requests, render the form
-    if request.method == 'GET':
-        return render_template('generate.html')
-        
-    # For POST requests, process the form
-    try:
-        # Get form data
-        title = request.form.get('title', '')
-        genre = request.form.get('genre', '')
-        target_length = request.form.get('target_length', 'medium')
-        complexity = request.form.get('complexity', 'medium')
-        initial_prompt = request.form.get('initial_prompt', '')
-        
-        logger.info(f"Received generation request - Title: {title}, Genre: {genre}, Length: {target_length}")
-        
-        # Generate unique project ID
-        import random
-        project_id = str(random.getrandbits(64) - 2**63)
-        logger.info(f"Generated project ID: {project_id}")
-        
-        # Configure workflow
-        config = {
-            "title": title,
-            "genre": genre,
-            "target_length": target_length,
-            "complexity": complexity,
-            "use_openai": True,   # Using OpenAI as primary service
-            "initial_prompt": initial_prompt
-        }
-        
-        logger.debug(f"Initializing workflow with config: {json.dumps(config)}")
-        
-        # Create workflow
-        workflow = ManuscriptWorkflow(
-            project_id=project_id,
-            title=title,
-            genre=genre,
-            target_length=target_length,
-            complexity=complexity,
-            initial_prompt=initial_prompt,
-            use_openai=True
-        )
-        logger.info(f"Workflow initialized for project {project_id}")
-        
-        # Store workflow in active workflows
-        active_workflows[project_id] = workflow
-        logger.info(f"{project_id}: Project initialized with title: {title}, genre: {genre}")
-        
-        # Start the workflow
-        workflow.start()
-        logger.info(f"Workflow started for project {project_id}")
-        
-        # Initialize the projects list in session if it doesn't exist
-        if 'projects' not in session:
-            session['projects'] = []
+    if request.method == 'POST':
+        try:
+            # Get form data
+            title = request.form.get('title', '')
+            genre = request.form.get('genre', '')
+            target_length = request.form.get('target_length', 'medium')
+            complexity = request.form.get('complexity', 'medium')
+            initial_prompt = request.form.get('initial_prompt', '')
             
-        # Add to session
-        projects = session['projects']
-        projects.append({
-            "id": project_id,
-            "title": title or "Untitled",
-            "genre": genre,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M")
-        })
-        session['projects'] = projects
-        
-        logger.info(f"{project_id}: Manuscript generation started")
-        
-        # Instead of redirecting to dashboard, show a simple status page
-        return f"""
-        <html>
-        <head>
-            <title>Manuscript Generation Started</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-                .container {{ border: 1px solid #ddd; padding: 20px; border-radius: 5px; }}
-                pre {{ background-color: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>Manuscript Generation Started</h1>
-                <p>Your manuscript generation has been started successfully.</p>
-                <h2>Project Details</h2>
-                <ul>
-                    <li><strong>Project ID:</strong> {project_id}</li>
-                    <li><strong>Title:</strong> {title or "Untitled"}</li>
-                    <li><strong>Genre:</strong> {genre}</li>
-                </ul>
-                <p>The manuscript generation is running in the background. You can check the app.log file for progress updates.</p>
-                <p>To view the project status: <a href="/project-status/{project_id}">Click here</a></p>
-                <p>To start a new manuscript, <a href="/generate">click here</a>.</p>
-                <p>To return to homepage, <a href="/">click here</a>.</p>
-            </div>
-        </body>
-        </html>
-        """
-    except Exception as e:
-        logger.error(f"Error starting generation: {str(e)}", exc_info=True)
-        flash(f"Error: {str(e)}", 'error')
-        return redirect(url_for('home'))
+            # Generate a unique project ID if not provided
+            project_id = request.form.get('project_id')
+            if not project_id:
+                project_id = str(uuid.uuid4())
+            
+            logger.info(f"Creating new project {project_id} with title: {title}, genre: {genre}")
+            
+            # Store in session if not already there
+            projects = session.get('projects', [])
+            if project_id not in [p.get('project_id') for p in projects]:
+                projects.append({
+                    'project_id': project_id,
+                    'title': title or f"Project {project_id[:8]}",
+                    'genre': genre,
+                    'created_at': datetime.now().isoformat()
+                })
+                session['projects'] = projects
+            
+            # Configuration for the manuscript workflow
+            config = {
+                'project_id': project_id,
+                'title': title,
+                'genre': genre,
+                'target_length': target_length,
+                'complexity': complexity,
+                'initial_prompt': initial_prompt,
+                'use_openai': True
+            }
+            
+            # Status to store in the central hub
+            status = {
+                "status": "initialized",
+                "created_at": datetime.now().isoformat(),
+                "title": title,
+                "genre": genre,
+                "target_length": target_length,
+                "complexity": complexity
+            }
+            
+            # Initialize memory and hub to store initial status
+            openai_client = get_openai_client()
+            embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+            memory = DynamicMemory(project_id, embedding_function)
+            hub = CentralHub(project_id, memory)
+            
+            # Store initial status
+            hub.update_project_status(status)
+            
+            # Initialize process for manuscript generation
+            if celery_enabled and run_workflow_task:
+                # Run asynchronously using Celery
+                logger.info(f"Starting async workflow for project {project_id}")
+                task = run_workflow_task.delay(project_id=project_id, **config)
+                
+                # Store task ID in memory for tracking
+                task_data = {
+                    "task_id": task.id,
+                    "status": "started",
+                    "timestamp": datetime.now().isoformat()
+                }
+                memory.add_document(
+                    json.dumps(task_data),
+                    "workflow",
+                    metadata={"type": "task_info"}
+                )
+                
+                flash(f'Starting manuscript generation with Celery task ID: {task.id}')
+            else:
+                # Fall back to direct execution in a thread
+                logger.info(f"Starting threaded workflow for project {project_id}")
+                workflow = ManuscriptWorkflow(**config)
+                active_workflows[project_id] = workflow
+                workflow.start()
+                flash('Starting manuscript generation in a background thread')
+            
+            return redirect(url_for('dashboard', project_id=project_id))
+            
+        except Exception as e:
+            logger.error(f"Error starting generation: {str(e)}", exc_info=True)
+            flash(f'Error starting generation: {str(e)}', 'error')
+            return redirect(url_for('home'))
+    
+    # GET method - render the form
+    return render_template('generate.html')
 
 # API endpoint to reset a stalled or dead workflow thread
 @app.route('/api/project/<project_id>/reset-thread', methods=['POST'])

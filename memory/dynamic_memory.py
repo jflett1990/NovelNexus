@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 from pathlib import Path
 import time
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,10 @@ class DynamicMemory:
         self.embedding_function = embedding_function
         self.vector_dimension = vector_dimension
         self.storage_dir = storage_dir or "./memory_data"
+        self.embedding_model_name = getattr(embedding_function, '__name__', 'unknown')
+        
+        # Initialize thread lock for concurrency protection
+        self._lock = threading.RLock()
         
         # Ensure storage directory exists
         Path(self.storage_dir).mkdir(parents=True, exist_ok=True)
@@ -86,65 +91,67 @@ class DynamicMemory:
     
     def _load_memory(self) -> None:
         """Load memory data from disk if it exists."""
-        memory_file = os.path.join(self.project_dir, "memory.pkl")
-        
-        if os.path.exists(memory_file):
-            try:
-                with open(memory_file, 'rb') as f:
-                    data = pickle.load(f)
-                    self.documents = data.get('documents', {})
-                    self.embeddings = data.get('embeddings', {})
-                    self.metadata = data.get('metadata', {})
-                    self.agent_memories = data.get('agent_memories', {})
-                logger.info(f"Loaded memory for project {self.project_id} with {len(self.documents)} documents")
-            except Exception as e:
-                logger.error(f"Error loading memory: {e}")
-                logger.info("Initializing new memory since loading failed")
-                # Initialize empty structures in case of failure
-                self.documents = {}
-                self.embeddings = {}
-                self.metadata = {}
-                self.agent_memories = {}
+        with self._lock:
+            memory_file = os.path.join(self.project_dir, "memory.pkl")
+            
+            if os.path.exists(memory_file):
+                try:
+                    with open(memory_file, 'rb') as f:
+                        data = pickle.load(f)
+                        self.documents = data.get('documents', {})
+                        self.embeddings = data.get('embeddings', {})
+                        self.metadata = data.get('metadata', {})
+                        self.agent_memories = data.get('agent_memories', {})
+                    logger.info(f"Loaded memory for project {self.project_id} with {len(self.documents)} documents")
+                except Exception as e:
+                    logger.error(f"Error loading memory: {e}")
+                    logger.info("Initializing new memory since loading failed")
+                    # Initialize empty structures in case of failure
+                    self.documents = {}
+                    self.embeddings = {}
+                    self.metadata = {}
+                    self.agent_memories = {}
     
     def _save_memory(self) -> None:
         """Save memory data to disk."""
-        memory_file = os.path.join(self.project_dir, "memory.pkl")
-        
-        for attempt in range(self.max_retries):
-            try:
-                data = {
-                    'documents': self.documents,
-                    'embeddings': self.embeddings,
-                    'metadata': self.metadata,
-                    'agent_memories': self.agent_memories
-                }
-                
-                # Create a temp file first
-                temp_file = os.path.join(self.project_dir, f"memory_temp_{int(time.time())}.pkl")
-                with open(temp_file, 'wb') as f:
-                    pickle.dump(data, f)
-                
-                # Rename temp file to final file (atomic operation)
-                import shutil
-                shutil.move(temp_file, memory_file)
+        with self._lock:
+            memory_file = os.path.join(self.project_dir, "memory.pkl")
+            
+            for attempt in range(self.max_retries):
+                try:
+                    data = {
+                        'documents': self.documents,
+                        'embeddings': self.embeddings,
+                        'metadata': self.metadata,
+                        'agent_memories': self.agent_memories
+                    }
                     
-                # Also save a JSON summary for inspection
-                summary = {
-                    'document_count': len(self.documents),
-                    'agent_memories': {agent: len(docs) for agent, docs in self.agent_memories.items()},
-                    'last_updated': datetime.now().isoformat()
-                }
-                
-                summary_file = os.path.join(self.project_dir, "memory_summary.json")
-                with open(summary_file, 'w') as f:
-                    json.dump(summary, f, indent=2)
+                    # Create a temp file first
+                    temp_file = os.path.join(self.project_dir, f"memory_temp_{int(time.time())}.pkl")
+                    with open(temp_file, 'wb') as f:
+                        pickle.dump(data, f)
                     
-                logger.debug(f"Saved memory for project {self.project_id}")
-                break
-            except Exception as e:
-                logger.error(f"Error saving memory (attempt {attempt+1}/{self.max_retries}): {e}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
+                    # Rename temp file to final file (atomic operation)
+                    import shutil
+                    shutil.move(temp_file, memory_file)
+                        
+                    # Also save a JSON summary for inspection
+                    summary = {
+                        'document_count': len(self.documents),
+                        'agent_memories': {agent: len(docs) for agent, docs in self.agent_memories.items()},
+                        'last_updated': datetime.now().isoformat()
+                    }
+                    
+                    summary_file = os.path.join(self.project_dir, "memory_summary.json")
+                    with open(summary_file, 'w') as f:
+                        json.dump(summary, f, indent=2)
+                        
+                    logger.debug(f"Saved memory for project {self.project_id}")
+                    break
+                except Exception as e:
+                    logger.error(f"Error saving memory (attempt {attempt+1}/{self.max_retries}): {e}")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay)
     
     def add_document(
         self,
@@ -165,90 +172,71 @@ class DynamicMemory:
         Returns:
             Document ID
         """
-        # Generate document ID if not provided
-        if not doc_id:
-            doc_id = hashlib.md5((text + str(datetime.now().timestamp())).encode()).hexdigest()
-        
-        # Create metadata if not provided
-        if metadata is None:
-            metadata = {}
-        
-        # Add timestamp to metadata
-        metadata['timestamp'] = datetime.now().isoformat()
-        metadata['agent'] = agent_name
-        
-        success = False
-        error_messages = []
-        
-        # Retry embedding multiple times
-        for attempt in range(self.max_retries):
-            try:
-                # Generate embedding for document
-                raw_embedding = self.embedding_function(text)
-                
-                # Verify embedding is properly formed
-                if not raw_embedding or (isinstance(raw_embedding, list) and len(raw_embedding) == 0):
-                    logger.warning(f"Empty embedding returned on attempt {attempt+1}, retrying...")
+        with self._lock:
+            # Generate document ID if not provided
+            if not doc_id:
+                doc_id = hashlib.md5((text + str(datetime.now().timestamp())).encode()).hexdigest()
+            
+            # Create metadata if not provided
+            if metadata is None:
+                metadata = {}
+            
+            # Add timestamp and agent to metadata
+            metadata['timestamp'] = datetime.now().isoformat()
+            metadata['agent'] = agent_name
+            
+            # Track embedding model in metadata
+            metadata['embedding_model'] = self.embedding_model_name
+            
+            success = False
+            error_messages = []
+            
+            # Retry embedding multiple times
+            for attempt in range(self.max_retries):
+                try:
+                    # Generate embedding for document
+                    raw_embedding = self.embedding_function(text)
+                    
+                    # Verify embedding is properly formed
+                    if not raw_embedding or (isinstance(raw_embedding, list) and len(raw_embedding) == 0):
+                        logger.warning(f"Empty embedding returned on attempt {attempt+1}, retrying...")
+                        if attempt < self.max_retries - 1:
+                            time.sleep(self.retry_delay)
+                            continue
+                    
+                    # Standardize the embedding dimension
+                    embedding = self._standardize_embedding(raw_embedding)
+                    
+                    # Store embedding dimensions in metadata
+                    metadata['embedding_dimensions'] = len(embedding)
+                    
+                    # Store document, embedding, and metadata
+                    self.documents[doc_id] = text
+                    self.embeddings[doc_id] = embedding
+                    self.metadata[doc_id] = metadata
+                    
+                    # Store in agent memory
+                    if agent_name not in self.agent_memories:
+                        self.agent_memories[agent_name] = []
+                    self.agent_memories[agent_name].append(doc_id)
+                    
+                    # Save updated memory
+                    self._save_memory()
+                    
+                    success = True
+                    break
+                except Exception as e:
+                    error_msg = f"Error adding document on attempt {attempt+1}: {e}"
+                    error_messages.append(error_msg)
+                    logger.error(error_msg)
                     if attempt < self.max_retries - 1:
                         time.sleep(self.retry_delay)
-                        continue
-                
-                # Standardize the embedding dimension
-                embedding = self._standardize_embedding(raw_embedding)
-                
-                # Store document, embedding, and metadata
-                self.documents[doc_id] = text
-                self.embeddings[doc_id] = embedding
-                self.metadata[doc_id] = metadata
-                
-                # Add to agent memory
-                if agent_name not in self.agent_memories:
-                    self.agent_memories[agent_name] = []
-                
-                self.agent_memories[agent_name].append(doc_id)
-                
-                # Save memory to disk
-                self._save_memory()
-                
-                success = True
-                logger.debug(f"Successfully added document {doc_id} to memory (attempt {attempt+1})")
-                break
-                
-            except Exception as e:
-                error_message = f"Error adding document (attempt {attempt+1}): {e}"
-                logger.error(error_message)
-                error_messages.append(error_message)
-                
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-        
-        if not success:
-            combined_errors = "; ".join(error_messages)
-            logger.error(f"Failed to add document after {self.max_retries} attempts: {combined_errors}")
-            # Try to add with deterministic embedding as last resort
-            try:
-                logger.warning("Using deterministic embedding as last resort")
-                det_embedding = self._deterministic_embedding(text)
-                
-                # Store document with deterministic embedding
-                self.documents[doc_id] = text
-                self.embeddings[doc_id] = det_embedding
-                self.metadata[doc_id] = metadata
-                
-                # Add to agent memory
-                if agent_name not in self.agent_memories:
-                    self.agent_memories[agent_name] = []
-                
-                self.agent_memories[agent_name].append(doc_id)
-                
-                # Save memory to disk
-                self._save_memory()
-                logger.info(f"Added document with deterministic embedding as fallback")
-            except Exception as fallback_error:
-                logger.error(f"Even deterministic embedding failed: {fallback_error}")
-                raise Exception(f"Failed to add document: {combined_errors}")
             
-        return doc_id
+            if not success:
+                error_details = ", ".join(error_messages)
+                raise Exception(f"Failed to add document after {self.max_retries} attempts: {error_details}")
+            
+            return doc_id
     
     def query_memory(
         self,
@@ -261,76 +249,21 @@ class DynamicMemory:
         Query memory for relevant documents.
         
         Args:
-            query: The query text
-            agent_name: Optional agent name to filter results
-            top_k: Number of results to return
-            threshold: Similarity threshold (0-1)
+            query: The query text or filter expression
+            agent_name: Optional agent filter
+            top_k: Maximum number of results
+            threshold: Minimum similarity threshold
             
         Returns:
-            List of dictionaries with document text, metadata, and similarity score
+            List of documents with metadata
         """
-        # Optimize empty case
-        if not self.documents:
-            logger.warning("Querying empty memory, returning empty results")
-            return []
+        with self._lock:
+            # Filter syntax detection: property:value
+            if ":" in query and " " not in query.strip():
+                return self._filter_memory(query, agent_name)
             
-        # Generate embedding for query with retry logic
-        query_embedding = None
-        for attempt in range(self.max_retries):
-            try:
-                raw_query_embedding = self.embedding_function(query)
-                
-                # Verify embedding
-                if not raw_query_embedding or (isinstance(raw_query_embedding, list) and len(raw_query_embedding) == 0):
-                    logger.warning(f"Empty query embedding returned on attempt {attempt+1}")
-                    if attempt < self.max_retries - 1:
-                        time.sleep(self.retry_delay)
-                        continue
-                
-                # Standardize the embedding dimension
-                query_embedding = self._standardize_embedding(raw_query_embedding)
-                break
-            except Exception as e:
-                logger.error(f"Error generating query embedding (attempt {attempt+1}): {e}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-        
-        # Fall back to deterministic embedding if all attempts failed
-        if query_embedding is None:
-            logger.warning("Falling back to deterministic query embedding")
-            query_embedding = self._deterministic_embedding(query)
-        
-        results = []
-        
-        # Filter doc_ids by agent_name if provided
-        if agent_name and agent_name in self.agent_memories:
-            doc_ids = self.agent_memories[agent_name]
-        else:
-            doc_ids = list(self.documents.keys())
-        
-        # Calculate similarity for each document
-        similarities = []
-        
-        for doc_id in doc_ids:
-            if doc_id in self.embeddings:
-                doc_embedding = self.embeddings[doc_id]
-                similarity = self._calculate_similarity(query_embedding, doc_embedding)
-                similarities.append((doc_id, similarity))
-        
-        # Sort by similarity (descending)
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        
-        # Filter by threshold and limit to top_k
-        for doc_id, similarity in similarities[:top_k]:
-            if similarity >= threshold:
-                results.append({
-                    'doc_id': doc_id,
-                    'text': self.documents[doc_id],
-                    'metadata': self.metadata[doc_id],
-                    'similarity': similarity
-                })
-        
-        return results
+            # Regular semantic search
+            return self._semantic_search(query, agent_name, top_k, threshold)
     
     def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -340,97 +273,78 @@ class DynamicMemory:
             doc_id: Document ID
             
         Returns:
-            Dictionary with document text and metadata, or None if not found
+            Document dictionary or None if not found
         """
-        if doc_id in self.documents:
+        with self._lock:
+            if doc_id not in self.documents:
+                return None
+            
             return {
-                'doc_id': doc_id,
                 'text': self.documents[doc_id],
-                'metadata': self.metadata[doc_id]
+                'metadata': self.metadata.get(doc_id, {})
             }
-        return None
     
     def get_agent_memory(self, agent_name: str) -> List[Dict[str, Any]]:
         """
-        Get all documents for an agent.
+        Get all documents for a specific agent.
         
         Args:
             agent_name: Name of the agent
             
         Returns:
-            List of dictionaries with document text and metadata
+            List of documents with metadata
         """
-        results = []
-        
-        if agent_name in self.agent_memories:
+        with self._lock:
+            if agent_name not in self.agent_memories:
+                return []
+            
+            results = []
             for doc_id in self.agent_memories[agent_name]:
                 if doc_id in self.documents:
                     results.append({
-                        'doc_id': doc_id,
                         'text': self.documents[doc_id],
-                        'metadata': self.metadata[doc_id]
+                        'metadata': self.metadata.get(doc_id, {})
                     })
-        
-        return results
+            
+            return results
     
     def delete_document(self, doc_id: str) -> bool:
         """
-        Delete a document from memory.
+        Delete a document by ID.
         
         Args:
             doc_id: Document ID
             
         Returns:
-            True if document was deleted, False otherwise
+            True if successfully deleted, False otherwise
         """
-        if doc_id in self.documents:
-            # Remove document from all structures
+        with self._lock:
+            if doc_id not in self.documents:
+                return False
+            
+            # Remove document
             del self.documents[doc_id]
             
+            # Remove embedding
             if doc_id in self.embeddings:
                 del self.embeddings[doc_id]
             
-            if doc_id in self.metadata:
-                del self.metadata[doc_id]
+            # Get agent name from metadata
+            agent_name = self.metadata[doc_id].get('agent') if doc_id in self.metadata else None
             
-            # Remove from agent memories
-            for agent_name in self.agent_memories:
+            # Remove from agent memory
+            if agent_name and agent_name in self.agent_memories:
                 if doc_id in self.agent_memories[agent_name]:
                     self.agent_memories[agent_name].remove(doc_id)
             
-            # Save memory to disk
+            # Remove metadata
+            if doc_id in self.metadata:
+                del self.metadata[doc_id]
+            
+            # Save updated memory
             self._save_memory()
             
             return True
-        
-        return False
-    
-    def _calculate_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """
-        Calculate cosine similarity between two vectors.
-        
-        Args:
-            vec1: First vector
-            vec2: Second vector
-            
-        Returns:
-            Cosine similarity (0-1)
-        """
-        # Convert to numpy arrays
-        vec1 = np.array(vec1)
-        vec2 = np.array(vec2)
-        
-        # Calculate cosine similarity
-        dot_product = np.dot(vec1, vec2)
-        norm_product = np.linalg.norm(vec1) * np.linalg.norm(vec2)
-        
-        if norm_product == 0:
-            return 0.0
-        
-        similarity = dot_product / norm_product
-        
-        # Ensure result is between 0 and 1
-        return max(0.0, min(1.0, similarity))
     
     def summarize_memory(self) -> Dict[str, Any]:
         """
@@ -467,14 +381,13 @@ class DynamicMemory:
             return 0
     
     def clear_memory(self) -> None:
-        """Clear all memory."""
-        self.documents = {}
-        self.embeddings = {}
-        self.metadata = {}
-        self.agent_memories = {}
-        
-        # Save empty memory to disk
-        self._save_memory()
+        """Clear all memory content."""
+        with self._lock:
+            self.documents = {}
+            self.embeddings = {}
+            self.metadata = {}
+            self.agent_memories = {}
+            self._save_memory()
 
     def _deterministic_embedding(self, text: str) -> List[float]:
         """

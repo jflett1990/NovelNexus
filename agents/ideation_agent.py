@@ -3,7 +3,7 @@ import json
 from typing import Dict, Any, List, Optional
 import uuid
 
-
+from agents.agent_prototype import AbstractAgent
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from schemas.ideation_schema import IDEATION_SCHEMA
@@ -12,7 +12,7 @@ from utils.validation_utils import validate_ideas
 
 logger = logging.getLogger(__name__)
 
-class IdeationAgent:
+class IdeationAgent(AbstractAgent):
     """
     Agent responsible for generating initial book ideas, themes, and concepts.
     """
@@ -31,14 +31,42 @@ class IdeationAgent:
             memory: Dynamic memory instance
             use_openai: Whether to use OpenAI models
         """
-        self.project_id = project_id
-        self.memory = memory
-        self.use_openai = use_openai
+        super().__init__(
+            project_id=project_id,
+            memory=memory,
+            use_openai=use_openai,
+            name="ideation_agent",
+            stage="ideation"
+        )
+    
+    def execute(
+        self,
+        title: Optional[str] = None,
+        genre: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
+        complexity: str = "medium",
+        num_ideas: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Main execution method - generates book ideas based on input parameters.
         
-        self.openai_client = get_openai_client() if use_openai else None
-        
-        self.name = "ideation_agent"
-        self.stage = "ideation"
+        Args:
+            title: Optional book title
+            genre: Optional book genre
+            initial_prompt: Optional initial prompt with ideas
+            complexity: Complexity level (low, medium, high)
+            num_ideas: Number of ideas to generate
+            
+        Returns:
+            Dictionary with generated ideas
+        """
+        return self.generate_ideas(
+            title=title,
+            genre=genre,
+            initial_prompt=initial_prompt,
+            complexity=complexity,
+            num_ideas=num_ideas
+        )
     
     def generate_ideas(
         self,
@@ -87,38 +115,27 @@ Provide output in JSON format according to the provided schema."""
         logger.debug(f"Built ideation prompt for project {self.project_id}. Using OpenAI: {self.use_openai}")
         
         try:
-            # Try OpenAI for generation
-            if self.use_openai and self.openai_client:
-                try:
-                    logger.info(f"Attempting to generate ideas using OpenAI for project {self.project_id}")
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.8,
-                        agent_name=self.name
-                    )
-                    
-                    raw_ideas = response["parsed_json"]
-                    
-                    # Validate and fix ideas using our validation utility
-                    validated_ideas = validate_ideas(raw_ideas)
-                    
-                    logger.info(f"Generated {len(validated_ideas.get('ideas', []))} ideas using OpenAI for project {self.project_id}")
-                    
-                    # Store in memory
-                    logger.debug(f"Storing validated ideas in memory for project {self.project_id}")
-                    self._store_in_memory(validated_ideas)
-                    logger.info(f"Successfully stored ideas in memory for project {self.project_id}")
-                    
-                    return validated_ideas
-                except Exception as e:
-                    logger.warning(f"OpenAI ideation failed: {e}")
-                    raise Exception(f"Failed to generate ideas: {e}")
+            # Use the parent class generate method with proper error handling
+            response = self.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.8,
+                json_format=True
+            )
             
-            logger.error(f"No available AI service (OpenAI) to generate ideas for project {self.project_id}")
-            raise Exception("No available AI service (OpenAI) to generate ideas")
+            raw_ideas = response["parsed_json"]
             
+            # Validate and fix ideas using our validation utility
+            validated_ideas = validate_ideas(raw_ideas)
+            
+            logger.info(f"Generated {len(validated_ideas.get('ideas', []))} ideas for project {self.project_id}")
+            
+            # Store in memory
+            logger.debug(f"Storing validated ideas in memory for project {self.project_id}")
+            self._store_in_memory(validated_ideas)
+            logger.info(f"Successfully stored ideas in memory for project {self.project_id}")
+            
+            return validated_ideas
         except Exception as e:
             logger.error(f"Ideation error: {e}", exc_info=True)
             raise Exception(f"Failed to generate ideas: {e}")
@@ -135,7 +152,7 @@ Provide output in JSON format according to the provided schema."""
             Dictionary with refined idea
         """
         # Retrieve the original idea from memory
-        original_ideas = self.memory.query_memory(f"idea_id:{idea_id}", agent_name=self.name)
+        original_ideas = self.get_memory(f"idea_id:{idea_id}")
         
         if not original_ideas:
             raise ValueError(f"Idea with ID {idea_id} not found in memory")
@@ -158,107 +175,105 @@ Respond with the refined idea formatted according to this JSON schema: {json.dum
 """
         
         try:
-            # Use OpenAI for refinement
-            if self.use_openai and self.openai_client:
-                try:
-                    response = self.openai_client.generate(
-                        prompt=user_prompt,
-                        system_prompt=system_prompt,
-                        json_mode=True,
-                        temperature=0.7,
-                        agent_name=self.name
-                    )
-                    
-                    raw_refined_idea = response["parsed_json"]
-                    
-                    # Wrap the single idea in a structure for validation
-                    idea_wrapper = {"ideas": [raw_refined_idea]}
-                    validated_wrapper = validate_ideas(idea_wrapper)
-                    
-                    # Extract the validated idea
-                    refined_idea = validated_wrapper["ideas"][0] if validated_wrapper["ideas"] else {}
-                    
-                    logger.info(f"Refined idea {idea_id} using OpenAI")
-                    
-                    # Update the idea ID if it changed
-                    if "id" in refined_idea and refined_idea["id"] != idea_id:
-                        refined_idea["id"] = idea_id
-                    
-                    # Store in memory
-                    self.memory.add_document(
-                        json.dumps(refined_idea),
-                        self.name,
-                        metadata={"type": "refined_idea", "original_id": idea_id}
-                    )
-                    
-                    return refined_idea
-                except Exception as e:
-                    logger.warning(f"OpenAI idea refinement failed: {e}")
+            # Use the parent class generate method
+            response = self.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                json_format=True
+            )
             
-            logger.error(f"No available AI service (OpenAI) to refine ideas for project {self.project_id}")
-            raise Exception("No available AI service (OpenAI) to refine ideas")
+            raw_refined_idea = response["parsed_json"]
             
+            # Wrap the single idea in a structure for validation
+            idea_wrapper = {"ideas": [raw_refined_idea]}
+            validated_wrapper = validate_ideas(idea_wrapper)
+            
+            # Extract the validated idea
+            refined_idea = validated_wrapper["ideas"][0] if validated_wrapper["ideas"] else {}
+            
+            logger.info(f"Refined idea {idea_id} using OpenAI")
+            
+            # Update the idea ID if it changed
+            if "id" in refined_idea and refined_idea["id"] != idea_id:
+                refined_idea["id"] = idea_id
+            
+            # Store in memory using parent class method
+            self.add_to_memory(
+                json.dumps(refined_idea),
+                metadata={"type": "refined_idea", "original_id": idea_id}
+            )
+            
+            return refined_idea
         except Exception as e:
             logger.error(f"Idea refinement error: {e}", exc_info=True)
             raise Exception(f"Failed to refine idea: {e}")
     
     def _store_in_memory(self, ideas: Dict[str, Any]) -> None:
         """
-        Store generated ideas in memory.
+        Store ideas in memory.
         
         Args:
             ideas: Dictionary with ideas to store
         """
-        if not ideas or 'ideas' not in ideas:
-            logger.warning(f"No ideas to store for project {self.project_id}")
-            return
+        # Store the complete ideas collection
+        self.add_to_memory(
+            json.dumps(ideas),
+            metadata={"type": "ideation_results"}
+        )
         
-        try:
-            # Store the full ideas collection
-            ideas_json = json.dumps(ideas)
-            self.memory.add_document(
-                ideas_json,
-                self.name,
-                metadata={"type": "ideas_collection"}
-            )
-            
-            # Store each individual idea
-            for idea in ideas['ideas']:
-                # Ensure each idea has an ID
-                if 'id' not in idea or not idea['id']:
-                    idea['id'] = str(uuid.uuid4())
+        # Also store each idea individually for easier retrieval
+        if "ideas" in ideas and isinstance(ideas["ideas"], list):
+            for idea in ideas["ideas"]:
+                # Ensure the idea has an ID
+                if "id" not in idea:
+                    idea["id"] = str(uuid.uuid4())
                 
-                idea_json = json.dumps(idea)
-                self.memory.add_document(
-                    idea_json,
-                    self.name,
+                # Store individual idea
+                self.add_to_memory(
+                    json.dumps(idea),
                     metadata={
-                        "type": "idea", 
-                        "idea_id": idea['id'],
-                        "title": idea.get('title', 'Untitled'),
-                        "score": idea.get('score', 0)
+                        "type": "idea",
+                        "idea_id": idea["id"],
+                        "title": idea.get("title", "Untitled"),
+                        "score": idea.get("score", 0)
                     }
                 )
-                
-            logger.debug(f"Stored {len(ideas['ideas'])} ideas in memory for project {self.project_id}")
-        except Exception as e:
-            logger.error(f"Error storing ideas in memory: {e}")
-            raise
     
     def get_best_idea(self) -> Dict[str, Any]:
         """
-        Get the best idea for the project.
+        Get the highest-rated idea.
         
         Returns:
             Dictionary with the best idea
         """
-        # Query memory for all ideas
-        ideas = self.memory.query_memory("type:idea", agent_name=self.name)
+        ideas = self.get_all_memory()
         
         if not ideas:
-            raise ValueError(f"No ideas found for project {self.project_id}")
+            raise ValueError("No ideas found in memory")
         
-        # For now, just return the first idea (most recent)
-        # In a future version, we could implement more sophisticated selection
-        best_idea_doc = ideas[0]
-        return json.loads(best_idea_doc['text'])
+        best_idea = None
+        highest_score = -1
+        
+        for doc in ideas:
+            try:
+                idea = json.loads(doc["text"])
+                if "score" in idea and float(idea["score"]) > highest_score:
+                    highest_score = float(idea["score"])
+                    best_idea = idea
+            except (json.JSONDecodeError, ValueError):
+                continue
+        
+        if not best_idea:
+            # Try to get any idea if scoring fails
+            for doc in ideas:
+                try:
+                    idea = json.loads(doc["text"])
+                    if "title" in idea and "id" in idea:
+                        return idea
+                except json.JSONDecodeError:
+                    continue
+            
+            raise ValueError("No valid ideas found in memory")
+        
+        return best_idea
