@@ -1,0 +1,30 @@
+{
+    "enhanced_workflow": {
+        "enable_human_loop": true,
+        "enable_mcp_memory": true,
+        "mcp_server_url": "http://localhost:3434",
+        "quality_gates": {
+            "min_chapter_words": 1000,
+            "max_placeholder_ratio": 0.05,
+            "min_dialogue_ratio": 0.15
+        },
+        "human_review": {
+            "auto_approve_timeout": 3600,
+            "required_checkpoints": [
+                "chapter_outline",
+                "quality_gate"
+            ]
+        }
+    },
+    "mcp_memory": {
+        "categories": [
+            "plot_points",
+            "character_profiles", 
+            "world_elements",
+            "narrative_threads",
+            "style_templates"
+        ],
+        "consistency_checks": true,
+        "cross_chapter_validation": true
+    }
+}

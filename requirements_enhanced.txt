@@ -1,0 +1,24 @@
+# Enhanced NovelNexus Dependencies
+# Install with: pip install -r requirements_enhanced.txt
+
+# Async support
+aiohttp>=3.8.0
+asyncio-mqtt>=0.11.0
+
+# Memory and embedding enhancements
+numpy>=1.21.0
+faiss-cpu>=1.7.0  # For advanced vector search
+sentence-transformers>=2.2.0  # For better embeddings
+
+# Human-in-the-loop interface
+websockets>=10.0  # For real-time notifications
+flask-socketio>=5.0.0  # For real-time updates
+
+# Quality control and NLP
+spacy>=3.4.0  # For text analysis
+textstat>=0.7.0  # For readability metrics
+nltk>=3.7  # For text processing
+
+# Enhanced workflow features
+pydantic>=1.10.0  # For data validation
+jsonschema>=4.0.0  # For schema validation

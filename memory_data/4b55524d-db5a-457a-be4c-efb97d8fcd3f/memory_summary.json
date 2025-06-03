@@ -1,0 +1,12 @@
+{
+  "document_count": 20,
+  "agent_memories": {
+    "workflow": 1,
+    "central_hub": 6,
+    "ideation_agent": 5,
+    "research_agent": 6,
+    "character_agent": 1,
+    "human_loop_interface": 1
+  },
+  "last_updated": "2025-06-03T14:35:49.155598"
+}

@@ -1,0 +1,28 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# 📖 Project Overview
+
+This project is a modular, agent-based AI framework designed to automate and streamline the book-writing process, leveraging both local (Ollama) and cloud-based (OpenAI) LLMs.
+
+## 🎯 Goals
+- Modular, non-linear workflow
+- Minimize data overload between agents
+- Clear integration points and iterative feedback loops
+- Flexible integration of local and cloud-based models
+
+## 🧩 Core Components
+- **Agents:** Specialized AI agents for different writing tasks
+- **Hubs:** Integration points that manage data flow between agents
+- **Orchestration:** LangChain & LangGraph for workflow management
+- **Local Models:** Ollama (deepseek-v2:16b, dolphin-mixtral:8x7b)
+- **Schema Validation:** JSON Schema for structured data validation
+
+Key documentation files:
+- [overview.md](mdc:overview.md) - General project overview
+- [tech_stack.md](mdc:tech_stack.md) - Technology stack details
+- [workflow.md](mdc:workflow.md) - Workflow visualization
+- [arhcetecture.md](mdc:arhcetecture.md) - Detailed architecture specifications
+- [implimentation_checklist.md](mdc:implimentation_checklist.md) - Implementation plan

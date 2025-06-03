@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NovelNexus - Human Review Interface</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .review-card {
+            border-left: 4px solid #007bff;
+            margin-bottom: 20px;
+        }
+        .quality-score {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .quality-good { color: #28a745; }
+        .quality-warning { color: #ffc107; }
+        .quality-danger { color: #dc3545; }
+        .content-preview {
+            max-height: 300px;
+            overflow-y: auto;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+        }
+        .review-actions {
+            position: sticky;
+            bottom: 0;
+            background: white;
+            padding: 20px;
+            border-top: 1px solid #dee2e6;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        }
+        .issue-badge {
+            margin: 2px;
+        }
+        .modification-area {
+            display: none;
+        }
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1050;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-book"></i> NovelNexus
+            </a>
+            <span class="navbar-text">
+                Human Review Interface
+            </span>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-8">
+                <div id="review-content">
+                    <!-- Review content will be loaded here -->
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-list"></i> Pending Reviews</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="pending-reviews">
+                            <!-- Pending reviews list -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Review Modal Template -->
+    <div class="modal fade" id="reviewModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-eye"></i> Review: <span id="review-title"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="card review-card">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h6 class="mb-0">Content for Review</h6>
+                                    <div>
+                                        <span class="badge bg-info" id="review-type"></span>
+                                        <span class="quality-score" id="quality-score"></span>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div id="quality-issues" class="mb-3"></div>
+                                    <div class="content-preview" id="content-preview"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h6><i class="fas fa-info-circle"></i> Review Context</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div id="review-context"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Feedback Section -->
+                    <div class="mt-4">
+                        <h6><i class="fas fa-comment"></i> Your Feedback</h6>
+                        <textarea class="form-control" id="feedback-text" rows="4" 
+                                  placeholder="Provide your feedback here..."></textarea>
+                    </div>
+                    
+                    <!-- Modification Section -->
+                    <div class="modification-area mt-4" id="modification-area">
+                        <h6><i class="fas fa-edit"></i> Content Modifications</h6>
+                        <textarea class="form-control" id="modified-content" rows="10" 
+                                  placeholder="Edit the content here..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer review-actions">
+                    <div class="btn-group w-100">
+                        <button type="button" class="btn btn-success" onclick="submitReview('approved')">
+                            <i class="fas fa-check"></i> Approve
+                        </button>
+                        <button type="button" class="btn btn-warning" onclick="toggleModification()">
+                            <i class="fas fa-edit"></i> Modify
+                        </button>
+                        <button type="button" class="btn btn-danger" onclick="submitReview('rejected')">
+                            <i class="fas fa-times"></i> Reject
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="submitReview('skipped')">
+                            <i class="fas fa-forward"></i> Skip
+                        </button>
+                    </div>
+                    <button type="button" class="btn btn-primary mt-2 w-100" id="submit-modification" 
+                            style="display: none;" onclick="submitReview('modified')">
+                        <i class="fas fa-save"></i> Submit Modifications
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Template -->
+    <div id="notification-template" class="alert alert-dismissible fade show notification" style="display: none;">
+        <span id="notification-message"></span>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentReviewId = null;
+        let projectId = new URLSearchParams(window.location.search).get('project_id');
+
+        // Initialize the interface
+        document.addEventListener('DOMContentLoaded', function() {
+            if (!projectId) {
+                showNotification('No project ID specified', 'danger');
+                return;
+            }
+            
+            loadPendingReviews();
+            
+            // Poll for new reviews every 10 seconds
+            setInterval(loadPendingReviews, 10000);
+        });
+
+        async function loadPendingReviews() {
+            try {
+                const response = await fetch(`/api/reviews/${projectId}/pending`);
+                const reviews = await response.json();
+                
+                const container = document.getElementById('pending-reviews');
+                
+                if (reviews.length === 0) {
+                    container.innerHTML = '<p class="text-muted">No pending reviews</p>';
+                    return;
+                }
+                
+                container.innerHTML = reviews.map(review => `
+                    <div class="card mb-2">
+                        <div class="card-body p-2">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <small class="text-muted">${review.type}</small>
+                                    <br>
+                                    <strong>${getReviewTitle(review)}</strong>
+                                </div>
+                                <button class="btn btn-sm btn-primary" onclick="openReview('${review.id}')">
+                                    Review
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                console.error('Error loading pending reviews:', error);
+                showNotification('Error loading reviews', 'danger');
+            }
+        }
+
+        async function openReview(reviewId) {
+            try {
+                const response = await fetch(`/api/reviews/${reviewId}`);
+                const review = await response.json();
+                
+                currentReviewId = reviewId;
+                
+                // Populate modal
+                document.getElementById('review-title').textContent = getReviewTitle(review);
+                document.getElementById('review-type').textContent = review.type;
+                
+                // Quality score
+                const qualityScore = review.content.quality_score || 100;
+                const scoreElement = document.getElementById('quality-score');
+                scoreElement.textContent = `${qualityScore}%`;
+                scoreElement.className = `quality-score ${getQualityClass(qualityScore)}`;
+                
+                // Quality issues
+                const issuesContainer = document.getElementById('quality-issues');
+                if (review.content.quality_issues && review.content.quality_issues.length > 0) {
+                    issuesContainer.innerHTML = review.content.quality_issues.map(issue => 
+                        `<span class="badge bg-warning issue-badge">${issue}</span>`
+                    ).join('');
+                } else {
+                    issuesContainer.innerHTML = '<span class="badge bg-success">No issues detected</span>';
+                }
+                
+                // Content preview
+                const content = getContentForPreview(review.content);
+                document.getElementById('content-preview').textContent = content;
+                document.getElementById('modified-content').value = content;
+                
+                // Context
+                const contextContainer = document.getElementById('review-context');
+                contextContainer.innerHTML = `
+                    <p><strong>Stage:</strong> ${review.context.stage || 'Unknown'}</p>
+                    <p><strong>Created:</strong> ${new Date(review.created_at).toLocaleString()}</p>
+                    <p><strong>Auto-approve:</strong> ${review.auto_approve ? 'Yes' : 'No'}</p>
+                `;
+                
+                // Show modal
+                new bootstrap.Modal(document.getElementById('reviewModal')).show();
+                
+            } catch (error) {
+                console.error('Error loading review:', error);
+                showNotification('Error loading review details', 'danger');
+            }
+        }
+
+        function toggleModification() {
+            const modArea = document.getElementById('modification-area');
+            const submitBtn = document.getElementById('submit-modification');
+            
+            if (modArea.style.display === 'none') {
+                modArea.style.display = 'block';
+                submitBtn.style.display = 'block';
+            } else {
+                modArea.style.display = 'none';
+                submitBtn.style.display = 'none';
+            }
+        }
+
+        async function submitReview(status) {
+            if (!currentReviewId) {
+                showNotification('No review selected', 'danger');
+                return;
+            }
+            
+            const feedback = document.getElementById('feedback-text').value;
+            const modifications = {};
+            
+            if (status === 'modified') {
+                modifications.content = document.getElementById('modified-content').value;
+            }
+            
+            try {
+                const response = await fetch(`/api/reviews/${currentReviewId}/submit`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        status: status,
+                        feedback: { comment: feedback },
+                        modifications: modifications
+                    })
+                });
+                
+                if (response.ok) {
+                    showNotification(`Review ${status} successfully`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('reviewModal')).hide();
+                    loadPendingReviews();
+                } else {
+                    throw new Error('Failed to submit review');
+                }
+                
+            } catch (error) {
+                console.error('Error submitting review:', error);
+                showNotification('Error submitting review', 'danger');
+            }
+        }
+
+        function getReviewTitle(review) {
+            switch (review.type) {
+                case 'chapter_draft':
+                    return `Chapter ${review.content.chapter_number || '?'}`;
+                case 'character_profile':
+                    return 'Character Profiles';
+                case 'chapter_outline':
+                    return 'Chapter Outline';
+                case 'quality_gate':
+                    return `Quality Check - Chapter ${review.content.chapter_number || '?'}`;
+                default:
+                    return review.type.replace('_', ' ').toUpperCase();
+            }
+        }
+
+        function getContentForPreview(content) {
+            if (content.content && typeof content.content === 'object') {
+                return content.content.content || JSON.stringify(content.content, null, 2);
+            }
+            return content.content || JSON.stringify(content, null, 2);
+        }
+
+        function getQualityClass(score) {
+            if (score >= 80) return 'quality-good';
+            if (score >= 60) return 'quality-warning';
+            return 'quality-danger';
+        }
+
+        function showNotification(message, type = 'info') {
+            const template = document.getElementById('notification-template');
+            const notification = template.cloneNode(true);
+            notification.id = '';
+            notification.style.display = 'block';
+            notification.className = `alert alert-${type} alert-dismissible fade show notification`;
+            notification.querySelector('#notification-message').textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

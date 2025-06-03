@@ -1,0 +1,83 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# 🧰 Coding Best Practices
+
+## Python Standards
+
+1. **Code Style**
+   - Follow PEP 8 conventions for Python code
+   - Use descriptive variable and function names
+   - Keep functions small and focused on a single responsibility
+   - Use type hints for function parameters and return values
+   -ALWAYS provide code that is sophisticated and production ready 
+   -NEVER truncate, simplify or omit scripts or code
+
+2. **Project Structure**
+   - Maintain modular code organization with clear separation of concerns
+   - Use proper imports (absolute imports preferred over relative)
+   - Keep related code together, separate unrelated functionality
+
+## LangChain & LangGraph Patterns
+
+1. **Prompt Engineering**
+   - Use structured prompts with clear instructions
+   - Store prompt templates separately from business logic
+   - Include comprehensive few-shot examples when needed
+   - Validate and sanitize inputs before passing to LLMs
+
+2. **Agent Development**
+   - Implement proper error handling for LLM calls
+   - Use retry mechanisms for unreliable model responses
+   - Apply output parsers to ensure structured responses
+   - Validate model outputs against JSON schemas
+
+3. **Workflow Design**
+   - Design LangGraph nodes with single responsibilities
+   - Ensure proper error handling between workflow steps
+   - Implement appropriate monitoring and logging
+   - Use conditional branching for complex decision logic
+
+## Schema Validation
+
+1. **JSON Schema Best Practices**
+   - Define schemas with clear property descriptions
+   - Include appropriate validation constraints (min/max, enum, etc.)
+   - Use consistent naming conventions across schemas
+   - Version schemas appropriately
+
+2. **Validation Implementation**
+   - Validate input data before processing
+   - Validate output data before passing to next component
+   - Handle validation errors gracefully with informative messages
+   - Log validation failures for monitoring
+
+## Error Handling & Logging
+
+1. **Exception Handling**
+   - Use specific exception types rather than generic exceptions
+   - Implement graceful degradation for LLM failures
+   - Include context information in error messages
+   - Avoid swallowing exceptions without logging
+
+2. **Logging**
+   - Use structured logging with appropriate levels
+   - Include relevant context in log messages
+   - Configure LangSmith tracing for all LLM interactions
+   - Implement proper monitoring for production systems
+
+## Testing
+
+1. **Test Coverage**
+   - Write unit tests for individual components
+   - Implement integration tests for agent interactions
+   - Test schema validation with both valid and invalid inputs
+   - Mock LLM responses for deterministic testing
+
+2. **LangSmith Testing**
+   - Configure proper test environments in LangSmith
+   - Use LangSmith datasets for consistent test cases
+   - Implement evaluation metrics for model outputs
+   - Create automation rules for continuous monitoring
