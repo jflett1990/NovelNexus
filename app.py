@@ -19,6 +19,7 @@ from interfaces.human_loop import HumanLoopInterface, ReviewStatus
 from collections import deque
 from datetime import datetime
 import dotenv
+from memory.openmemory_mcp import OpenMemoryMCP
 
 # Configure Celery for background tasks
 try:
@@ -2062,23 +2063,26 @@ def review_interface(project_id):
 def get_pending_reviews(project_id):
     """Get pending reviews for a project."""
     try:
-        # Initialize memory and human loop interface
-        openai_client = get_openai_client()
-        embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
-        memory = DynamicMemory(project_id, embedding_function)
-
+        # Try to use OpenMemoryMCP if available
+        mcp_server_url = "http://localhost:3434"
+        try:
+            memory = OpenMemoryMCP(project_id, server_url=mcp_server_url)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(memory.__aenter__())
+        except Exception:
+            # Fallback to DynamicMemory
+            openai_client = get_openai_client()
+            embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+            memory = DynamicMemory(project_id, embedding_function)
         human_loop = HumanLoopInterface(project_id, memory)
-
-        # Run async function in sync context
         import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-
         pending_reviews = loop.run_until_complete(human_loop.get_pending_reviews())
-
         return jsonify(pending_reviews)
     except Exception as e:
         logger.error(f"Error getting pending reviews: {e}")
@@ -2088,32 +2092,29 @@ def get_pending_reviews(project_id):
 def get_review_details(review_id):
     """Get details for a specific review."""
     try:
-        # Find the project_id from the review_id (simplified approach)
-        # In a real implementation, you'd store this mapping
         project_id = request.args.get('project_id')
         if not project_id:
             return jsonify({"error": "project_id required"}), 400
-
-        # Initialize memory and human loop interface
-        openai_client = get_openai_client()
-        embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
-        memory = DynamicMemory(project_id, embedding_function)
-
+        mcp_server_url = "http://localhost:3434"
+        try:
+            memory = OpenMemoryMCP(project_id, server_url=mcp_server_url)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(memory.__aenter__())
+        except Exception:
+            openai_client = get_openai_client()
+            embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+            memory = DynamicMemory(project_id, embedding_function)
         human_loop = HumanLoopInterface(project_id, memory)
-
-        # Run async function in sync context
         import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-
         review_data = loop.run_until_complete(human_loop.get_review_status(review_id))
-
         if not review_data:
             return jsonify({"error": "Review not found"}), 404
-
         return jsonify(review_data)
     except Exception as e:
         logger.error(f"Error getting review details: {e}")
@@ -2127,39 +2128,34 @@ def submit_review(review_id):
         status = data.get('status')
         feedback = data.get('feedback', {})
         modifications = data.get('modifications', {})
-
-        # Find the project_id from the review_id
         project_id = request.args.get('project_id')
         if not project_id:
             return jsonify({"error": "project_id required"}), 400
-
-        # Initialize memory and human loop interface
-        openai_client = get_openai_client()
-        embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
-        memory = DynamicMemory(project_id, embedding_function)
-
+        mcp_server_url = "http://localhost:3434"
+        try:
+            memory = OpenMemoryMCP(project_id, server_url=mcp_server_url)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(memory.__aenter__())
+        except Exception:
+            openai_client = get_openai_client()
+            embedding_function = lambda text: openai_client.get_embeddings(text, model=EMBEDDING_MODEL)
+            memory = DynamicMemory(project_id, embedding_function)
         human_loop = HumanLoopInterface(project_id, memory)
-
-        # Convert status string to ReviewStatus enum
         review_status = ReviewStatus(status)
-
-        # Run async function in sync context
         import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-
         success = loop.run_until_complete(human_loop.submit_review(
             review_id, review_status, feedback, modifications
         ))
-
         if success:
             return jsonify({"status": "success"})
         else:
             return jsonify({"error": "Failed to submit review"}), 500
-
     except Exception as e:
         logger.error(f"Error submitting review: {e}")
         return jsonify({"error": str(e)}), 500

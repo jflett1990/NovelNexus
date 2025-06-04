@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from models.openai_client import get_openai_client
 from memory.dynamic_memory import DynamicMemory
 from utils.json_utils import parse_json_safely
+from utils.context_manager import create_context_manager
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +81,18 @@ class ChapterWriterAgent:
         
         logger.info(f"Writing chapter {chapter_number}: {chapter_title}")
         
-        # Get integrated data for context
-        integrated_data = self._get_integrated_data()
-        
-        # Extract relevant information
-        characters = integrated_data.get("characters", [])
-        world_building = integrated_data.get("world_building", {})
-        plot = integrated_data.get("plot", {})
-        genre = integrated_data.get("genre", "")
+        # ENHANCED: Get comprehensive context from all workflow stages
+        context_manager = create_context_manager(self.memory, self.project_id)
+        workflow_context = context_manager.get_comprehensive_context("chapter_writing")
+
+        # Extract relevant information from enhanced context
+        characters = workflow_context.get("characters", [])
+        world_building = workflow_context.get("world_building", {})
+        plot = workflow_context.get("plot", {})
+
+        # Get genre from ideation context
+        ideation = workflow_context.get("ideation", {})
+        genre = ideation.get("genre", "fiction")
         
         # Prepare character summaries - simplified for prompt length
         character_summaries = []
@@ -104,8 +109,13 @@ class ChapterWriterAgent:
         # Get target word count from chapter plan
         target_word_count = chapter_plan.get("word_count", None)
 
-        # Generate prompt
-        prompt = self._create_chapter_writing_prompt(
+        # Generate enhanced prompt with comprehensive context
+        context_prompt = context_manager.build_context_prompt(
+            workflow_context,
+            focus_areas=["ideation", "characters", "world_building", "plot"]
+        )
+
+        prompt = self._create_enhanced_chapter_writing_prompt(
             chapter_number=chapter_number,
             chapter_title=chapter_title,
             chapter_summary=chapter_summary,
@@ -114,7 +124,8 @@ class ChapterWriterAgent:
             plot_info=plot,
             genre=genre,
             previous_content=previous_chapter_content,
-            target_word_count=target_word_count
+            target_word_count=target_word_count,
+            context_prompt=context_prompt
         )
         
         # Generate chapter content in segments to manage token limits
@@ -250,6 +261,71 @@ class ChapterWriterAgent:
             logger.info(f"Created fallback content for chapter {chapter_number}")
             return fallback_chapter
     
+    def _create_enhanced_chapter_writing_prompt(self, chapter_number, chapter_title, chapter_summary,
+                                      characters, world_info, plot_info, genre, previous_content=None, target_word_count=None, context_prompt=None) -> str:
+        """Create an enhanced, context-aware prompt for chapter writing."""
+
+        # Use the comprehensive context prompt if available
+        if context_prompt:
+            return self._build_context_aware_prompt(
+                chapter_number, chapter_title, chapter_summary,
+                target_word_count, context_prompt, previous_content
+            )
+
+        # Fall back to original method if no context available
+        return self._create_chapter_writing_prompt(
+            chapter_number, chapter_title, chapter_summary,
+            characters, world_info, plot_info, genre,
+            previous_content, target_word_count
+        )
+
+    def _build_context_aware_prompt(self, chapter_number, chapter_title, chapter_summary,
+                                   target_word_count, context_prompt, previous_content=None) -> str:
+        """Build a context-aware prompt using comprehensive workflow context."""
+
+        # Determine word count target
+        word_count_text = "2,000-3,000 words"  # Default
+        if target_word_count:
+            if target_word_count <= 2000:
+                word_count_text = f"approximately {target_word_count} words"
+            elif target_word_count <= 4000:
+                word_count_text = f"{target_word_count-500}-{target_word_count} words"
+            else:
+                word_count_text = f"{target_word_count-1000}-{target_word_count} words"
+
+        # Previous content context
+        context_note = ""
+        if previous_content:
+            context_note = f"\n\nCONTINUITY CONTEXT:\nContinue seamlessly from the previous chapter. Last scene: {previous_content[-300:].strip()}\n"
+
+        return f"""Write Chapter {chapter_number}: "{chapter_title}"
+
+{context_prompt}
+
+CHAPTER FOCUS:
+{chapter_summary}
+{context_note}
+
+WRITING REQUIREMENTS:
+• Write {word_count_text} of engaging narrative
+• Use the established characters, world, and plot elements from the context above
+• Maintain consistency with previous chapters and established story elements
+• Show character development and advance the plot meaningfully
+• Use specific details from the world-building and character backgrounds
+• Create authentic dialogue that reflects each character's established personality
+• Build on the themes and conflicts established in earlier stages
+
+CREATIVE GUIDELINES:
+✓ Reference specific details from character backgrounds and world-building
+✓ Use established character relationships and dynamics
+✓ Advance the main plot while developing subplots
+✓ Show consequences of previous chapter events
+✓ Create scenes that feel authentic to the established world
+✓ Use dialogue that reflects each character's unique voice
+✓ Build toward the story's established themes and conflicts
+
+Write the complete chapter now, using the rich context provided above:"""
+
     def _create_chapter_writing_prompt(self, chapter_number, chapter_title, chapter_summary,
                                       characters, world_info, plot_info, genre, previous_content=None, target_word_count=None) -> str:
         """Create an optimized, anti-cliché prompt for chapter writing."""

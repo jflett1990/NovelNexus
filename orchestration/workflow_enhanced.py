@@ -496,8 +496,8 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
                 "stage": "chapter_writing",
                 "auto_fix_attempted": False
             },
-            auto_approve=True,  # Auto-approve to prevent infinite waiting
-            timeout_seconds=30  # Short timeout
+            auto_approve=False,  # Require human review
+            timeout_seconds=1800  # 30 minutes
         )
 
         logger.info(f"Requesting human review for chapter {chapter_num} (Review ID: {review_id})")
@@ -565,7 +565,7 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
                     CheckpointType.CHAPTER_OUTLINE,
                     outline_data,
                     context={"stage": stage_name},
-                    auto_approve=True,
+                    auto_approve=False,  # Require human review
                     timeout_seconds=1800  # 30 minutes
                 )
 
@@ -916,11 +916,23 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
         world_docs = self.memory.query_memory("type:world_building", agent_name="world_building_agent")
         plot_docs = self.memory.query_memory("type:plot", agent_name="plot_agent")
 
+        # Debug logging for memory queries
+        logger.debug(f"Chapter Planning - Ideation docs found: {len(ideation_docs)}")
+        logger.debug(f"Chapter Planning - Character docs found: {len(character_docs)}")
+        logger.debug(f"Chapter Planning - World docs found: {len(world_docs)}")
+        logger.debug(f"Chapter Planning - Plot docs found: {len(plot_docs)}")
+
         # Parse the data
         ideation_data = json.loads(ideation_docs[0]["text"]) if ideation_docs else {}
         character_data = json.loads(character_docs[0]["text"]) if character_docs else {}
         world_data = json.loads(world_docs[0]["text"]) if world_docs else {}
         plot_data = json.loads(plot_docs[0]["text"]) if plot_docs else {}
+
+        # Debug logging for parsed data
+        logger.debug(f"Chapter Planning - Ideation data keys: {list(ideation_data.keys())}")
+        logger.debug(f"Chapter Planning - Character data keys: {list(character_data.keys())}")
+        logger.debug(f"Chapter Planning - World data keys: {list(world_data.keys())}")
+        logger.debug(f"Chapter Planning - Plot data keys: {list(plot_data.keys())}")
 
         # Build a rich manuscript outline with all available context
         selected_idea = ideation_data.get("selected_idea", {})
@@ -943,8 +955,20 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
         logger.info(f"Chapter planning with outline: {manuscript_outline['title']} ({manuscript_outline['genre']})")
         logger.info(f"Plot chapters: {len(plot_data.get('chapters', []))}")
         logger.info(f"Characters: {len(character_data.get('characters', []))}")
+        
+        # Debug log the full manuscript outline
+        logger.debug(f"Chapter Planning - Full manuscript outline: {json.dumps(manuscript_outline, indent=2)}")
 
+        # Call the chapter planner
+        logger.info("Calling chapter planner agent...")
         chapter_plan = self.agents["chapter_planner"].plan_chapters(manuscript_outline)
+        
+        # Debug log the result
+        logger.debug(f"Chapter Planning - Result type: {type(chapter_plan)}")
+        logger.debug(f"Chapter Planning - Result length: {len(chapter_plan) if isinstance(chapter_plan, list) else 'N/A'}")
+        if isinstance(chapter_plan, list) and len(chapter_plan) > 0:
+            logger.debug(f"Chapter Planning - First chapter: {json.dumps(chapter_plan[0], indent=2)}")
+        logger.info(f"Chapter planner returned {len(chapter_plan) if isinstance(chapter_plan, list) else 0} chapters")
 
         # Store chapter plan in memory
         self.memory.add_document(
@@ -997,8 +1021,8 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
                     CheckpointType.CHAPTER_OUTLINE,
                     content=chapter,
                     context={"chapter_number": chapter_number},
-                    auto_approve=True,  # TEMPORARILY AUTO-APPROVE TO STOP INFINITE LOOP
-                    timeout_seconds=30  # Short timeout
+                    auto_approve=False,  # Require human review
+                    timeout_seconds=1800  # 30 minutes
                 )
                 await self.human_loop.wait_for_review(review_id)
 
@@ -1026,8 +1050,8 @@ class EnhancedManuscriptWorkflow(ManuscriptWorkflow):
                         CheckpointType.QUALITY_GATE,
                         content=chapter_data,
                         context={"chapter_number": chapter_number, "quality_issue": "Failed quality check"},
-                        auto_approve=True,  # Auto-approve to prevent infinite waiting
-                        timeout_seconds=30  # Short timeout
+                        auto_approve=False,  # Require human review
+                        timeout_seconds=1800  # 30 minutes
                     )
                     reviewed_chapter = await self.human_loop.wait_for_review(review_id)
                     chapters.append(reviewed_chapter)

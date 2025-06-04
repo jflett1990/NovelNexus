@@ -45,20 +45,29 @@ class ChapterPlannerAgent:
     def plan_chapters(self, manuscript_outline: Dict[str, Any], previous_chapters: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Generate a detailed chapter plan based on manuscript outline.
-        
+
         Args:
             manuscript_outline: The complete outline of the manuscript
             previous_chapters: Optional list of already completed chapters
-            
+
         Returns:
             List of chapter plans with details
         """
+        logger.debug(f"ChapterPlannerAgent.plan_chapters called with outline keys: {list(manuscript_outline.keys()) if manuscript_outline else 'None'}")
+
+        # ENHANCED: Retrieve context from previous workflow stages
+        enhanced_context = self._get_workflow_context(manuscript_outline)
+
+        # Use enhanced context for chapter planning
+        manuscript_outline = enhanced_context.get("manuscript_outline", manuscript_outline)
+
         if not manuscript_outline:
             logger.error("Cannot plan chapters without manuscript outline")
             return self._create_fallback_chapter_plan(12)
             
         # Format the outline for the prompt
         outline_text = self._format_outline_for_prompt(manuscript_outline)
+        logger.debug(f"Formatted outline text (first 500 chars): {outline_text[:500]}...")
         
         # Include information about previous chapters if available
         previous_chapters_text = ""
@@ -70,9 +79,15 @@ class ChapterPlannerAgent:
         # Target number of chapters based on the outline
         target_chapters = len(manuscript_outline.get("chapters", [])) if "chapters" in manuscript_outline else 0
         if target_chapters == 0:
-            # Set a reasonable default for target chapters
-            target_chapters = 12
-            logger.warning(f"No chapters found in outline, defaulting to {target_chapters} chapters")
+            # Check if plot has chapters
+            plot_data = manuscript_outline.get("plot", {})
+            if isinstance(plot_data, dict) and "chapters" in plot_data:
+                target_chapters = len(plot_data["chapters"])
+                logger.debug(f"Found {target_chapters} chapters in plot data")
+            else:
+                # Set a reasonable default for target chapters
+                target_chapters = 12
+                logger.warning(f"No chapters found in outline, defaulting to {target_chapters} chapters")
 
         # Calculate target word count per chapter based on target length
         target_length = manuscript_outline.get("target_length", "medium")
@@ -121,48 +136,63 @@ Follow this exact JSON structure:
   ...
 ]"""
 
+        logger.debug(f"Generated prompt (first 1000 chars): {prompt[:1000]}...")
+        logger.info(f"Calling OpenAI API with model {self.model_name} for chapter planning...")
+
         try:
             response = self.openai_client.generate(
                 prompt=prompt,
                 model=self.model_name
             )
             
+            logger.debug(f"OpenAI API response keys: {list(response.keys()) if response else 'None'}")
+            
             if self.provider == "openai":
                 chapters_json = response.get("content", "").strip()
             else:
                 chapters_json = response.get("content", "").strip()
             
+            logger.debug(f"Raw response length: {len(chapters_json)} chars")
+            logger.debug(f"Raw response (first 500 chars): {chapters_json[:500]}...")
+            
             # Extract JSON array from response
             chapters_json = self._extract_json(chapters_json)
+            logger.debug(f"Extracted JSON length: {len(chapters_json)} chars")
             
             # Parse chapter plans
             try:
                 chapter_plans = json.loads(chapters_json)
+                logger.debug(f"Parsed JSON type: {type(chapter_plans)}")
                 
                 # Ensure it's a list - if it's an object with a chapters key, extract that
                 if isinstance(chapter_plans, dict) and "chapters" in chapter_plans:
                     chapter_plans = chapter_plans["chapters"]
+                    logger.debug("Extracted chapters array from object")
                 
                 if not isinstance(chapter_plans, list):
                     logger.error("JSON response is not a list or object with chapters key")
                     return self._create_fallback_chapter_plan(target_chapters)
                 
+                logger.debug(f"Successfully parsed {len(chapter_plans)} chapters")
+                
                 # Validate structure
-                for chapter in chapter_plans:
+                for i, chapter in enumerate(chapter_plans):
                     required_fields = ["number", "title", "summary"]
                     for field in required_fields:
                         if field not in chapter:
+                            logger.warning(f"Chapter {i} missing field '{field}', adding default")
                             chapter[field] = f"Missing {field}"
                 
                 logger.info(f"Successfully created {len(chapter_plans)} chapter plans")
                 return chapter_plans
             except json.JSONDecodeError as e:
                 logger.error(f"Error parsing JSON from chapter planning: {str(e)}")
+                logger.error(f"Failed JSON: {chapters_json[:200]}...")
                 # Use fallback plan
                 return self._create_fallback_chapter_plan(target_chapters)
             
         except Exception as e:
-            logger.error(f"Error planning chapters: {str(e)}")
+            logger.error(f"Error planning chapters: {str(e)}", exc_info=True)
             # Use fallback plan
             return self._create_fallback_chapter_plan(target_chapters)
     
@@ -301,14 +331,27 @@ Respond with ONLY a JSON object in this exact format:
             
             # Extract characters
             characters_text = ""
-            characters = manuscript_outline.get("characters", [])
+            characters_data = manuscript_outline.get("characters", [])
+            
+            # Handle both list and dict formats
+            if isinstance(characters_data, dict) and "characters" in characters_data:
+                characters = characters_data["characters"]
+            elif isinstance(characters_data, list):
+                characters = characters_data
+            else:
+                characters = []
+            
             if characters:
                 characters_text = "CHARACTERS:\n"
                 for idx, character in enumerate(characters):
-                    name = character.get("name", f"Character {idx+1}")
-                    role = character.get("role", "")
-                    desc = character.get("description", "")
-                    characters_text += f"- {name} ({role}): {desc}\n"
+                    if isinstance(character, dict):
+                        name = character.get("name", f"Character {idx+1}")
+                        role = character.get("role", "")
+                        desc = character.get("description", "")
+                        characters_text += f"- {name} ({role}): {desc}\n"
+                    else:
+                        # Handle string format
+                        characters_text += f"- {character}\n"
             
             # Extract world building
             world_text = ""
@@ -324,9 +367,12 @@ Respond with ONLY a JSON object in this exact format:
                 if locations:
                     world_text += "LOCATIONS:\n"
                     for location in locations:
-                        loc_name = location.get("name", "")
-                        loc_desc = location.get("description", "")
-                        world_text += f"- {loc_name}: {loc_desc}\n"
+                        if isinstance(location, dict):
+                            loc_name = location.get("name", "")
+                            loc_desc = location.get("description", "")
+                            world_text += f"- {loc_name}: {loc_desc}\n"
+                        else:
+                            world_text += f"- {location}\n"
             
             # Extract plot
             plot_text = ""
@@ -360,7 +406,7 @@ Respond with ONLY a JSON object in this exact format:
             idea = manuscript_outline.get("idea", {})
             if idea:
                 idea_text = "MAIN CONCEPT:\n"
-                idea_text += f"{idea.get('concept', '')}\n\n"
+                idea_text += f"{idea.get('concept', idea.get('description', ''))}\n\n"
                 idea_text += f"THEMES: {', '.join(idea.get('themes', []))}\n"
             
             # Combine all elements
@@ -421,4 +467,95 @@ TARGET LENGTH: {target_length}
             
             # If all else fails, return empty array
             logger.error(f"Could not extract valid JSON from response: {text[:100]}...")
-            return "[]" 
+            return "[]"
+
+    def _get_workflow_context(self, manuscript_outline: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Retrieve context from previous workflow stages to enhance chapter planning.
+
+        Returns:
+            Enhanced context including all previous workflow stage data
+        """
+        enhanced_context = {
+            "manuscript_outline": manuscript_outline,
+            "idea_context": {},
+            "research_context": {},
+            "character_context": [],
+            "world_context": {},
+            "plot_context": {}
+        }
+
+        try:
+            # Get ideation context from memory
+            ideation_docs = self.memory.query_memory("type:selected_idea", agent_name="ideation_agent")
+            if not ideation_docs:
+                ideation_docs = self.memory.query_memory("type:idea", agent_name="ideation_agent")
+
+            if ideation_docs:
+                try:
+                    ideation_data = json.loads(ideation_docs[0]["text"])
+                    enhanced_context["idea_context"] = ideation_data
+                    logger.info("Enhanced chapter planning with ideation context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse ideation context from memory")
+
+            # Get research context from memory
+            research_docs = self.memory.query_memory("type:research", agent_name="research_agent")
+            if research_docs:
+                try:
+                    research_data = json.loads(research_docs[0]["text"])
+                    enhanced_context["research_context"] = research_data
+                    logger.info("Enhanced chapter planning with research context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse research context from memory")
+
+            # Get character context from memory
+            character_docs = self.memory.query_memory("type:character", agent_name="character_agent")
+            if character_docs:
+                try:
+                    characters_list = []
+                    for doc in character_docs:
+                        char_data = json.loads(doc["text"])
+                        if isinstance(char_data, dict) and "name" in char_data:
+                            characters_list.append(char_data)
+                    enhanced_context["character_context"] = characters_list
+                    logger.info(f"Enhanced chapter planning with {len(characters_list)} characters from memory")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse character context from memory")
+
+            # Get world-building context from memory
+            world_docs = self.memory.query_memory("type:world", agent_name="world_building_agent")
+            if world_docs:
+                try:
+                    world_data = json.loads(world_docs[0]["text"])
+                    enhanced_context["world_context"] = world_data
+                    logger.info("Enhanced chapter planning with world-building context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse world-building context from memory")
+
+            # Get plot context from memory
+            plot_docs = self.memory.query_memory("type:plot", agent_name="plot_agent")
+            if plot_docs:
+                try:
+                    plot_data = json.loads(plot_docs[0]["text"])
+                    enhanced_context["plot_context"] = plot_data
+                    logger.info("Enhanced chapter planning with plot context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse plot context from memory")
+
+            # Enhance the manuscript outline with retrieved context
+            if enhanced_context["idea_context"]:
+                manuscript_outline["idea"] = enhanced_context["idea_context"]
+            if enhanced_context["character_context"]:
+                manuscript_outline["characters"] = enhanced_context["character_context"]
+            if enhanced_context["world_context"]:
+                manuscript_outline["world"] = enhanced_context["world_context"]
+            if enhanced_context["plot_context"]:
+                manuscript_outline["plot"] = enhanced_context["plot_context"]
+
+            enhanced_context["manuscript_outline"] = manuscript_outline
+
+        except Exception as e:
+            logger.error(f"Error retrieving workflow context: {str(e)}")
+
+        return enhanced_context

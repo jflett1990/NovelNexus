@@ -33,6 +33,14 @@ class CharacterAgent:
     def generate_characters(self, idea: Dict[str, Any], world_context: Dict[str, Any], num_characters: int = 5, user_prompt: str = None, system_prompt: str = None):
         characters = []
         try:
+            # ENHANCED: Retrieve context from previous workflow stages
+            enhanced_context = self._get_workflow_context(idea, world_context)
+
+            # Use enhanced context for character generation
+            idea = enhanced_context.get("idea", idea)
+            world_context = enhanced_context.get("world_context", world_context)
+            research_context = enhanced_context.get("research_context", {})
+
             # Set default prompts if not provided
             if system_prompt is None:
                 system_prompt = """You are an expert in character development for novels.
@@ -45,7 +53,23 @@ Do not include any text or markdown outside the JSON array."""
             if user_prompt is None:
                 genre = idea.get("genre", "fiction")
                 title = idea.get("title", "Story")
+
+                # Build context-aware prompt
+                context_info = ""
+                if research_context:
+                    context_info += f"\n\nRESEARCH CONTEXT:\n{json.dumps(research_context, indent=2)}"
+                if world_context and world_context.get("locations"):
+                    context_info += f"\n\nWORLD CONTEXT:\n{json.dumps(world_context, indent=2)}"
+
                 user_prompt = f"""Create {num_characters} unique characters for a {genre} novel titled "{title}".
+
+STORY CONTEXT:
+- Genre: {genre}
+- Title: {title}
+- Plot Summary: {idea.get('plot_summary', 'Not specified')}
+- Themes: {', '.join(idea.get('themes', []))}
+- Target Audience: {idea.get('target_audience', 'General')}
+{context_info}
 
 For each character, include:
 1. Name and role in the story
@@ -287,6 +311,63 @@ Important reminders:
     def _create_fallback_relationships(self, characters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Implementation of _create_fallback_relationships method
         pass
+
+    def _get_workflow_context(self, idea: Dict[str, Any], world_context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Retrieve context from previous workflow stages to enhance character generation.
+
+        Returns:
+            Enhanced context including ideation, research, and world-building data
+        """
+        enhanced_context = {
+            "idea": idea,
+            "world_context": world_context,
+            "research_context": {},
+            "ideation_context": {}
+        }
+
+        try:
+            # Get ideation context from memory
+            ideation_docs = self.memory.query_memory("type:selected_idea", agent_name="ideation_agent")
+            if not ideation_docs:
+                ideation_docs = self.memory.query_memory("type:idea", agent_name="ideation_agent")
+
+            if ideation_docs:
+                try:
+                    ideation_data = json.loads(ideation_docs[0]["text"])
+                    enhanced_context["ideation_context"] = ideation_data
+                    # Use the most detailed idea from memory if available
+                    if ideation_data and isinstance(ideation_data, dict):
+                        enhanced_context["idea"] = ideation_data
+                        logger.info("Enhanced character generation with ideation context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse ideation context from memory")
+
+            # Get research context from memory
+            research_docs = self.memory.query_memory("type:research", agent_name="research_agent")
+            if research_docs:
+                try:
+                    research_data = json.loads(research_docs[0]["text"])
+                    enhanced_context["research_context"] = research_data
+                    logger.info("Enhanced character generation with research context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse research context from memory")
+
+            # Get world-building context from memory if not provided
+            if not world_context or not world_context.get("locations"):
+                world_docs = self.memory.query_memory("type:world", agent_name="world_building_agent")
+                if world_docs:
+                    try:
+                        world_data = json.loads(world_docs[0]["text"])
+                        enhanced_context["world_context"] = world_data
+                        logger.info("Enhanced character generation with world-building context")
+                    except json.JSONDecodeError:
+                        logger.warning("Failed to parse world-building context from memory")
+
+        except Exception as e:
+            logger.error(f"Error retrieving workflow context: {str(e)}")
+
+        return enhanced_context
 
     def get_characters(self) -> List[Dict[str, Any]]:
         try:

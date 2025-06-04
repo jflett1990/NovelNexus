@@ -48,18 +48,27 @@ class PlotAgent:
     ) -> Dict[str, Any]:
         """
         Generate a detailed plot structure for the book.
-        
+
         Args:
             book_idea: Dictionary containing the book idea
             world_data: Optional dictionary with world building data
             characters: Optional list of character dictionaries
             complexity: Complexity level (low, medium, high)
-            
+
         Returns:
             Dictionary with the generated plot structure
         """
         logger.info(f"Generating plot for project {self.project_id}")
-        
+
+        # ENHANCED: Retrieve context from previous workflow stages
+        enhanced_context = self._get_workflow_context(book_idea, world_data, characters)
+
+        # Use enhanced context for plot generation
+        book_idea = enhanced_context.get("idea", book_idea)
+        world_data = enhanced_context.get("world_data", world_data)
+        characters = enhanced_context.get("characters", characters)
+        research_context = enhanced_context.get("research_context", {})
+
         # Protect against empty inputs
         if not book_idea or not isinstance(book_idea, dict):
             logger.warning(f"Empty or invalid book_idea provided, using minimal default")
@@ -396,7 +405,80 @@ Include 2-4 major story arcs that develop throughout these chapters."""
                     plot[key] = []
             
             return plot
-        
+
         except Exception as e:
             logger.error(f"Error retrieving plot: {str(e)}")
-            return {"chapters": [], "arcs": [], "themes": []} 
+            return {"chapters": [], "arcs": [], "themes": []}
+
+    def _get_workflow_context(self, book_idea: Dict[str, Any], world_data: Optional[Dict[str, Any]], characters: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Retrieve context from previous workflow stages to enhance plot generation.
+
+        Returns:
+            Enhanced context including ideation, research, character, and world-building data
+        """
+        enhanced_context = {
+            "idea": book_idea,
+            "world_data": world_data,
+            "characters": characters,
+            "research_context": {},
+            "ideation_context": {}
+        }
+
+        try:
+            # Get ideation context from memory
+            ideation_docs = self.memory.query_memory("type:selected_idea", agent_name="ideation_agent")
+            if not ideation_docs:
+                ideation_docs = self.memory.query_memory("type:idea", agent_name="ideation_agent")
+
+            if ideation_docs:
+                try:
+                    ideation_data = json.loads(ideation_docs[0]["text"])
+                    enhanced_context["ideation_context"] = ideation_data
+                    # Use the most detailed idea from memory if available
+                    if ideation_data and isinstance(ideation_data, dict):
+                        enhanced_context["idea"] = ideation_data
+                        logger.info("Enhanced plot generation with ideation context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse ideation context from memory")
+
+            # Get research context from memory
+            research_docs = self.memory.query_memory("type:research", agent_name="research_agent")
+            if research_docs:
+                try:
+                    research_data = json.loads(research_docs[0]["text"])
+                    enhanced_context["research_context"] = research_data
+                    logger.info("Enhanced plot generation with research context")
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse research context from memory")
+
+            # Get character context from memory if not provided
+            if not characters:
+                character_docs = self.memory.query_memory("type:character", agent_name="character_agent")
+                if character_docs:
+                    try:
+                        characters_list = []
+                        for doc in character_docs:
+                            char_data = json.loads(doc["text"])
+                            if isinstance(char_data, dict) and "name" in char_data:
+                                characters_list.append(char_data)
+                        enhanced_context["characters"] = characters_list
+                        logger.info(f"Enhanced plot generation with {len(characters_list)} characters from memory")
+                    except json.JSONDecodeError:
+                        logger.warning("Failed to parse character context from memory")
+
+            # Get world-building context from memory if not provided
+            if not world_data:
+                world_docs = self.memory.query_memory("type:world", agent_name="world_building_agent")
+                if world_docs:
+                    try:
+                        world_data = json.loads(world_docs[0]["text"])
+                        enhanced_context["world_data"] = world_data
+                        logger.info("Enhanced plot generation with world-building context")
+                    except json.JSONDecodeError:
+                        logger.warning("Failed to parse world-building context from memory")
+
+        except Exception as e:
+            logger.error(f"Error retrieving workflow context: {str(e)}")
+
+        return enhanced_context
